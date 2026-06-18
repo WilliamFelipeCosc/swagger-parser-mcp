@@ -1,7 +1,6 @@
 
 import requests
 import jsonref
-from pprint import pprint
 
 def show_paths(resolved_data, module_name=None):
     paths = resolved_data.get('paths', {})
@@ -33,13 +32,20 @@ def show_enums(resolved_data):
     components = resolved_data.get('components', {})
     schemas = components.get('schemas', {})
     enums = {key: value for key, value in schemas.items() if 'enum' in value}
-    
+
+    enums2 = {}
     print("Enums found in components:")
     for enum_name, enum_details in enums.items():
+        enums2[enum_name] = {
+            "enum": enum_details['enum'],
+            "description": enum_details.get('description', 'No description provided')
+        }
         print(f"Enum Name: {enum_name}")
         print(f"  Values: {enum_details['enum']}")
         print(f"  Description: {enum_details.get('description', 'No description provided')}")
         print()
+
+    return enums2
 
 def main():
   response = requests.get("https://api-homolog.b2.club/swagger/v2/swagger.json")
@@ -48,7 +54,7 @@ def main():
   resolved_data = jsonref.loads(response.text, base_uri="https://api-homolog.b2.club/swagger/v2/swagger.json")
 
   # show_paths(resolved_data, "Dashboard")
-  show_enums(resolved_data)
+  return show_enums(resolved_data)
   
 
 if __name__ == '__main__':
