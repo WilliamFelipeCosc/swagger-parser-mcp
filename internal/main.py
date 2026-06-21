@@ -1,7 +1,7 @@
 import requests
 import jsonref
 
-from backend.params import swagger_version
+from services.params import swagger_version
 
 def show_paths(resolved_data, module_name=None):
     paths = resolved_data.get('paths', {})
@@ -29,6 +29,8 @@ def show_paths(resolved_data, module_name=None):
             if requestBody:
                 paths_info[path][method]["requestBody"] = requestBody.get('content', {}).get('application/json', {}).get('schema', 'No schema provided')
             for status_code, response in responses.items():
+                if status_code == 400: continue  # Skip 400 responses
+                
                 paths_info[path][method]["responses"][status_code] = {
                     "description": response.get('description', 'No description provided'),
                     "schema": response.get('content', {}).get('application/json', {}).get('schema', 'No schema provided')
@@ -49,7 +51,6 @@ def show_enums(resolved_data):
         }
 
     return formattedEnums
-
   
 def load_json(url: str):
     response = requests.get(url)

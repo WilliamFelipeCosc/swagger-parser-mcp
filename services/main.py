@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from backend.params import swagger_version
+from services.params import swagger_version
 from internal.main import get_enums, get_paths
 
 app = FastAPI()
