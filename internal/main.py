@@ -15,11 +15,13 @@ def get_swagger_json_url(version: swagger_version):
     else:
         raise ValueError("Invalid swagger version")
 
-def show_paths(resolved_data, module_name=None):
+def show_paths(resolved_data, module_name):
     paths = resolved_data.get('paths', {})
 
-    if module_name:
-        paths = {path: ops for path, ops in paths.items() if path.find(f"/{module_name}/") != -1}
+    if not module_name:
+        raise ValueError("Module name must be provided")
+
+    paths = {path: ops for path, ops in paths.items() if path.find(f"/{module_name}/") != -1}
 
     paths_info = {}
     for path, operations in paths.items():
@@ -68,6 +70,20 @@ def load_json(url: str):
     response = requests.get(url)
     return jsonref.loads(response.text, base_uri=url)
 
+def get_module_names(resolved_data):
+    paths = resolved_data.get('paths', {})
+    module_names = set()
+
+    for path in paths.keys():
+        parts = path.strip('/').split('/')
+        if len(parts) > 1:
+            if parts[2] == 'admin':
+                module_names.add(f"{parts[2]}/{parts[3]}")
+            else:
+                module_names.add(parts[2])
+
+    return list(module_names)
+
 def get_enums(version: swagger_version):
     url = get_swagger_json_url(version)
 
@@ -77,11 +93,23 @@ def get_enums(version: swagger_version):
     resolved_data = load_json(url)
     return show_enums(resolved_data)
 
-def get_paths(version: swagger_version, module_name=None):
+def get_paths(version: swagger_version, module_name: str):
+    url = get_swagger_json_url(version)
+
+    if not url:
+        raise ValueError(f"URL for version {version} not found in environment variables")
+
+    if not module_name:
+        raise ValueError("Module name must be provided")
+    
+    resolved_data = load_json(url)
+    return show_paths(resolved_data, module_name)
+
+def get_modules(version: swagger_version):
     url = get_swagger_json_url(version)
 
     if not url:
         raise ValueError(f"URL for version {version} not found in environment variables")
     
     resolved_data = load_json(url)
-    return show_paths(resolved_data, module_name)
+    return get_module_names(resolved_data)
