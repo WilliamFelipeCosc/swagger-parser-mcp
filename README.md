@@ -12,11 +12,43 @@ The server runs on a single port and serves both a REST API and an MCP endpoint 
 
 ## Installation
 
+### Windows
+
+```powershell
+git clone <repo-url>
+cd swagger-mcp-py
+
+python -m venv .venv
+.venv\Scripts\activate
+
+pip install -r requirements.txt
+```
+
+### macOS
+
 ```bash
 git clone <repo-url>
 cd swagger-mcp-py
+
+python3 -m venv .venv
+source .venv/bin/activate
+
 pip install -r requirements.txt
 ```
+
+### Linux
+
+```bash
+git clone <repo-url>
+cd swagger-mcp-py
+
+python3 -m venv .venv
+source .venv/bin/activate
+
+pip install -r requirements.txt
+```
+
+> The virtual environment must be active whenever you run the server. To reactivate it in a new terminal session, run `.venv\Scripts\activate` (Windows) or `source .venv/bin/activate` (macOS/Linux).
 
 ## Configuration
 
