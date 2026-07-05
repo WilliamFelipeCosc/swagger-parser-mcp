@@ -1,62 +1,7 @@
-import os
-import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
-from .shared import _get_connection, _get_project
-from .wiki import _get_pages_batch_page
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DB_PATH = str(_REPO_ROOT / "data" / "wiki_cache.db")
-
-
-def _get_db_path() -> str:
-    return os.getenv("WIKI_CACHE_DB_PATH", DEFAULT_DB_PATH)
-
-
-def _ensure_schema(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS wiki_structure (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            wiki_id TEXT NOT NULL,
-            page_id INTEGER NOT NULL,
-            path TEXT NOT NULL,
-            name TEXT NOT NULL,
-            parent_id INTEGER REFERENCES wiki_structure(id),
-            depth INTEGER NOT NULL,
-            structure_synced_at TEXT NOT NULL,
-            UNIQUE(wiki_id, page_id)
-        )
-        """
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_wiki_structure_parent ON wiki_structure(parent_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_wiki_structure_wiki_path ON wiki_structure(wiki_id, path)")
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS wiki_page_content (
-            structure_id INTEGER PRIMARY KEY REFERENCES wiki_structure(id),
-            content TEXT,
-            content_synced_at TEXT
-        )
-        """
-    )
-    # Standalone FTS5 table (no `content=` external-content link): path and content live
-    # in two different tables (wiki_structure/wiki_page_content), and external-content FTS5
-    # requires a single source table, so this keeps its own copy, inserted with an explicit
-    # rowid matching wiki_structure.id.
-    conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS wiki_pages_fts USING fts5(path, content)")
-    conn.commit()
-
-
-def _get_db_connection() -> sqlite3.Connection:
-    db_path = _get_db_path()
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    _ensure_schema(conn)
-    return conn
+from .connection import _get_db_connection
 
 
 def _path_depth(path: str) -> int:
@@ -74,27 +19,12 @@ def _parent_path(path: str) -> Optional[str]:
     return trimmed.rsplit("/", 1)[0]
 
 
-def sync_wiki_cache(wiki_id: str, fetch_content: bool = True) -> dict:
-    """Rebuilds the local cache for a single wiki: paginates through every page via
-    GetPagesBatch, optionally fetches each page's content individually (Azure DevOps has
-    no bulk-content endpoint), then replaces that wiki's structure/content/FTS rows.
-
-    Pages are inserted shallowest-first so each page's parent_id (an in-memory
-    path -> structure_id map) is always already known by the time its children are
-    inserted — no separate linking pass needed."""
-    connection = _get_connection()
-    project = _get_project()
-    wiki_client = connection.clients.get_wiki_client()
-
-    all_pages = []
-    continuation_token = None
-    while True:
-        pages, continuation_token = _get_pages_batch_page(wiki_client, project, wiki_id, 100, continuation_token)
-        all_pages.extend(pages)
-        if not continuation_token:
-            break
-    all_pages.sort(key=lambda page: _path_depth(page.path))
-
+def replace_wiki_pages(wiki_id: str, pages: list) -> dict:
+    """Replaces all cached rows for `wiki_id`. `pages` is a list of
+    {"page_id": int, "path": str, "content": Optional[str]}; this function sorts them
+    shallowest-first internally so each page's parent_id (an in-memory path -> structure_id
+    map) is always already known by the time its children are inserted."""
+    sorted_pages = sorted(pages, key=lambda page: _path_depth(page["path"]))
     synced_at = datetime.now(timezone.utc).isoformat()
     content_fetched = 0
 
@@ -108,30 +38,22 @@ def sync_wiki_cache(wiki_id: str, fetch_content: bool = True) -> dict:
         db.execute("DELETE FROM wiki_structure WHERE wiki_id = ?", (wiki_id,))
 
         path_to_id = {}
-        for page in all_pages:
-            parent_id = path_to_id.get(_parent_path(page.path))
+        for page in sorted_pages:
+            parent_id = path_to_id.get(_parent_path(page["path"]))
             cursor = db.execute(
                 """
                 INSERT INTO wiki_structure (wiki_id, page_id, path, name, parent_id, depth, structure_synced_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (wiki_id, page.id, page.path, _path_name(page.path), parent_id, _path_depth(page.path), synced_at),
+                (wiki_id, page["page_id"], page["path"], _path_name(page["path"]), parent_id, _path_depth(page["path"]), synced_at),
             )
             structure_id = cursor.lastrowid
-            path_to_id[page.path] = structure_id
+            path_to_id[page["path"]] = structure_id
 
-            content = None
-            content_synced_at = None
-            if fetch_content:
-                try:
-                    page_response = wiki_client.get_page_by_id(
-                        project=project, wiki_identifier=wiki_id, id=page.id, include_content=True
-                    )
-                    content = getattr(page_response.page, "content", None)
-                    content_synced_at = synced_at
-                    content_fetched += 1
-                except Exception:
-                    pass
+            content = page.get("content")
+            content_synced_at = synced_at if content is not None else None
+            if content is not None:
+                content_fetched += 1
 
             db.execute(
                 "INSERT INTO wiki_page_content (structure_id, content, content_synced_at) VALUES (?, ?, ?)",
@@ -139,7 +61,7 @@ def sync_wiki_cache(wiki_id: str, fetch_content: bool = True) -> dict:
             )
             db.execute(
                 "INSERT INTO wiki_pages_fts (rowid, path, content) VALUES (?, ?, ?)",
-                (structure_id, page.path, content or ""),
+                (structure_id, page["path"], content or ""),
             )
 
         db.commit()
@@ -148,7 +70,7 @@ def sync_wiki_cache(wiki_id: str, fetch_content: bool = True) -> dict:
 
     return {
         "wiki_id": wiki_id,
-        "pages_synced": len(all_pages),
+        "pages_synced": len(sorted_pages),
         "content_fetched": content_fetched,
         "synced_at": synced_at,
     }
@@ -219,7 +141,7 @@ def get_wiki_tree(wiki_id: Optional[str] = None) -> list:
     return _rows_to_tree(rows)
 
 
-def get_wiki_subtree(wiki_id: str, root_page_id: Optional[int] = None, root_path: Optional[str] = None) -> dict:
+def get_wiki_subtree(wiki_id: str, root_page_id: Optional[int] = None, root_path: Optional[str] = None) -> Optional[dict]:
     """Returns the folder/path subtree rooted at a specific page (e.g. root_page_id=589 for
     "/Wiki Nivello/Produto & Agilidade"), walking parent_id links via a recursive CTE.
     Exactly one of root_page_id/root_path must be given to identify the root."""

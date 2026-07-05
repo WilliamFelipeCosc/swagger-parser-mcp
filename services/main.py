@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Query
 from typing import Optional
 from services.params import swagger_version
-from internal.main import get_enums, get_modules, get_paths
+from internal.swagger import get_enums, get_modules, get_paths
 from internal.azure_devops import (
     get_tasks,
     get_pbis,
@@ -9,6 +9,8 @@ from internal.azure_devops import (
     get_wiki_page_by_path,
     get_wiki_page_by_id,
     sync_wiki_cache,
+)
+from internal.db import (
     search_wiki_cache,
     get_wiki_tree,
     get_wiki_subtree,

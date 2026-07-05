@@ -26,15 +26,22 @@ This project exposes a Swagger/OpenAPI parser as both a REST API and an MCP (Mod
 **Layer breakdown:**
 
 - `services/params.py` — defines `swagger_version` enum (`v1`, `v2`), the only shared type
-- `internal/main.py` — core logic: fetches Swagger JSON URLs from env vars, resolves `$ref`s via `jsonref`, and exposes three functions: `get_enums`, `get_paths`, `get_modules`
-- `services/main.py` — FastAPI app wrapping the three internal functions as REST endpoints (`/{version}/enums`, `/{version}/modules`, `/{version}/paths/{module_name}`), plus Azure DevOps endpoints
+- `internal/swagger/` — core Swagger logic, split by concern:
+  - `client.py` — `get_swagger_json_url` (reads the version's URL from env vars), `load_json` (fetches + resolves `$ref`s via `jsonref`)
+  - `parser.py` — `show_enums`, `show_paths`, `get_module_names` (pure functions over already-resolved Swagger JSON)
+  - `__init__.py` composes the two into the three public functions: `get_enums`, `get_paths`, `get_modules`
+- `services/main.py` — FastAPI app wrapping the Swagger and Azure DevOps internal functions as REST endpoints (`/{version}/enums`, `/{version}/modules`, `/{version}/paths/{module_name}`, plus `/azure/*`)
 - `services/mcp.py` — uses `FastMCP.from_fastapi()` to auto-generate an MCP server from the FastAPI app, then merges both into a single `combined_app` (FastAPI with both route sets and the MCP lifespan)
 - `internal/azure_devops/` — Azure DevOps integration using the `azure-devops` Python SDK, split by concern:
   - `shared.py` — `_get_connection`/`_get_project`, used by both submodules below
-  - `tasks.py` — Tasks/PBIs (board) integration; exposes `get_tasks`, `get_pbis`
-  - `wiki.py` — Wiki integration; exposes `get_wiki_pages`, `get_wiki_page_by_path`, `get_wiki_page_by_id`
-  - `cache.py` — local SQLite+FTS5 cache of wiki structure/content; exposes `sync_wiki_cache`, `search_wiki_cache`, `get_wiki_tree`, `get_wiki_subtree`, `get_wiki_cache_status`
-  - `__init__.py` re-exports all ten functions, so callers still do `from internal.azure_devops import ...`
+  - `tasks.py` — Tasks/PBIs (board) integration; exposes `get_tasks` (accepts an optional `parent_id` filter), `get_pbis`
+  - `wiki.py` — live Wiki API calls; exposes `get_wiki_pages`, `get_wiki_page_by_path`, `get_wiki_page_by_id`
+  - `wiki_sync.py` — orchestrates cache rebuilds: fetches pages/content from the Azure API (via `wiki.py`'s `_get_pages_batch_page`) and persists them via `internal.db.replace_wiki_pages`; exposes `sync_wiki_cache`. This is the only module that talks to both the Azure API and the SQLite cache — `wiki.py` never touches SQLite and `internal/db/` never calls Azure.
+  - `__init__.py` re-exports `get_tasks`, `get_pbis`, `get_wiki_pages`, `get_wiki_page_by_path`, `get_wiki_page_by_id`, `sync_wiki_cache`
+- `internal/db/` — generic SQLite+FTS5 persistence layer for the wiki cache, with zero Azure API knowledge:
+  - `connection.py` — `_get_db_connection` (path from `WIKI_CACHE_DB_PATH` env var, default `data/wiki_cache.db`), schema creation
+  - `wiki_repository.py` — `replace_wiki_pages` (bulk replace for one wiki, sorts shallowest-first internally to resolve `parent_id`), `search_wiki_cache`, `get_wiki_tree`, `get_wiki_subtree`, `get_wiki_cache_status`
+  - `__init__.py` re-exports all five functions, so callers do `from internal.db import ...`
 
 **Environment variables** (`.env`):
 - `SWAGGER_JSON_V1_URL` — URL to v1 Swagger JSON
@@ -84,8 +91,8 @@ All endpoints are under `/azure/` and auto-exposed as MCP tools.
 
 **Wiki pagination** (`/azure/wiki`): response shape is `{"pages": [...], "continuation_token": ...}`. Pass `top` and `continuation_token` (from a previous response) to page through a single wiki's pages — this only works when `wiki_id` is set, since Azure DevOps continuation tokens are per-wiki. When `wiki_id` is omitted (listing all wikis), `continuation_token` is always `null` and each wiki returns up to `top` pages with no further pagination.
 
-**Wiki cache** (`internal/azure_devops/cache.py`): a local SQLite database (`data/wiki_cache.db` by default; override with `WIKI_CACHE_DB_PATH`) caching wiki structure and content for full-text search, entirely separate from the live `/azure/wiki*` endpoints above (those still always hit the API — the cache is purely additive).
-- `sync_azure_devops_wiki_cache` (`wiki_id` required, `fetch_content` default `true`) fully replaces that wiki's cached rows: paginates through every page via `GetPagesBatch`, then (if `fetch_content`) fetches each page's content individually — there's no bulk-content API, so this is one call per page (417 pages: ~0.4s structure-only, ~20-120s with content, depending on API latency). The cache starts empty; nothing else here works until this is called at least once.
+**Wiki cache** (`internal/azure_devops/wiki_sync.py` orchestrating `internal/db/`): a local SQLite database (`data/wiki_cache.db` by default; override with `WIKI_CACHE_DB_PATH`) caching wiki structure and content for full-text search, entirely separate from the live `/azure/wiki*` endpoints above (those still always hit the API — the cache is purely additive).
+- `sync_azure_devops_wiki_cache` (`wiki_id` required, `fetch_content` default `true`) fully replaces that wiki's cached rows: `wiki_sync.py` paginates through every page via `GetPagesBatch`, then (if `fetch_content`) fetches each page's content individually — there's no bulk-content API, so this is one call per page (417 pages: ~0.4s structure-only, ~20-120s with content, depending on API latency) — then hands the fetched pages to `internal.db.replace_wiki_pages` to persist. The cache starts empty; nothing else here works until this is called at least once.
 - Schema is normalized into structure vs. content, confirmed empirically that every `parent_path` in this wiki corresponds to a real page (no synthetic "folder" rows needed):
   - `wiki_structure` — `wiki_id`, `page_id`, `path`, `name` (last path segment), `parent_id` (self-referencing FK, resolved at sync time by inserting pages shallowest-first so each parent's row already exists), `depth`.
   - `wiki_page_content` — one row per `wiki_structure.id` (`structure_id` FK/PK), `content` (nullable if never synced).

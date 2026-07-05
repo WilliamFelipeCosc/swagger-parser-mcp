@@ -1,20 +1,3 @@
-import requests
-import jsonref
-import os
-
-from services.params import swagger_version
-from dotenv import load_dotenv
-
-load_dotenv()
-
-def get_swagger_json_url(version: swagger_version):
-    if version == swagger_version.v1:
-        return os.getenv("SWAGGER_JSON_V1_URL")
-    elif version == swagger_version.v2:
-        return os.getenv("SWAGGER_JSON_V2_URL")
-    else:
-        raise ValueError("Invalid swagger version")
-
 def show_paths(resolved_data, module_name):
     paths = resolved_data.get('paths', {})
 
@@ -28,7 +11,7 @@ def show_paths(resolved_data, module_name):
 
         paths_info[path] = {}
         for method, details in operations.items():
-                       
+
             parameters = details.get('parameters', [])
             requestBody = details.get('requestBody', {})
             responses = details.get('responses', {})
@@ -44,7 +27,7 @@ def show_paths(resolved_data, module_name):
                 paths_info[path][method]["requestBody"] = requestBody.get('content', {}).get('application/json', {}).get('schema', 'No schema provided')
             for status_code, response in responses.items():
                 if status_code == 400: continue  # Skip 400 responses
-                
+
                 paths_info[path][method]["responses"][status_code] = {
                     "description": response.get('description', 'No description provided'),
                     "schema": response.get('content', {}).get('application/json', {}).get('schema', 'No schema provided')
@@ -65,10 +48,6 @@ def show_enums(resolved_data):
         }
 
     return formattedEnums
-  
-def load_json(url: str):
-    response = requests.get(url)
-    return jsonref.loads(response.text, base_uri=url)
 
 def get_module_names(resolved_data):
     paths = resolved_data.get('paths', {})
@@ -83,33 +62,3 @@ def get_module_names(resolved_data):
                 module_names.add(parts[2])
 
     return list(module_names)
-
-def get_enums(version: swagger_version):
-    url = get_swagger_json_url(version)
-
-    if not url:
-        raise ValueError(f"URL for version {version} not found in environment variables")
-    
-    resolved_data = load_json(url)
-    return show_enums(resolved_data)
-
-def get_paths(version: swagger_version, module_name: str):
-    url = get_swagger_json_url(version)
-
-    if not url:
-        raise ValueError(f"URL for version {version} not found in environment variables")
-
-    if not module_name:
-        raise ValueError("Module name must be provided")
-    
-    resolved_data = load_json(url)
-    return show_paths(resolved_data, module_name)
-
-def get_modules(version: swagger_version):
-    url = get_swagger_json_url(version)
-
-    if not url:
-        raise ValueError(f"URL for version {version} not found in environment variables")
-    
-    resolved_data = load_json(url)
-    return get_module_names(resolved_data)
