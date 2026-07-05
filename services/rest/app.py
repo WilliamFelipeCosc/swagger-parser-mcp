@@ -9,6 +9,7 @@ from internal.azure_devops import (
     get_wiki_page_by_path,
     get_wiki_page_by_id,
     sync_wiki_cache,
+    ensure_wiki_cache_fresh,
 )
 from internal.db import (
     search_wiki_cache,
@@ -122,10 +123,12 @@ async def get_wiki_page_by_id_endpoint(
     "/azure/wiki/cache/sync",
     operation_id="sync_azure_devops_wiki_cache",
     description=(
-        "Rebuilds the local SQLite+FTS5 cache for one wiki: paginates through every page and "
-        "(by default) fetches each page's content individually, then replaces that wiki's cached "
-        "rows. Can be slow for large wikis (one API call per page when fetch_content=true). Call "
-        "this before using search/tree/status — the cache starts empty."
+        "Forces a full bootstrap/reset resync of the local SQLite+FTS5 cache for one wiki: "
+        "paginates through every page and (by default) fetches each page's content "
+        "individually, then replaces that wiki's cached rows. Can be slow for large wikis "
+        "(one API call per page when fetch_content=true). Only needed for a wiki's first-ever "
+        "sync or to force a full reset — every wiki is also auto-synced in the background on "
+        "server startup, and reads below auto-refresh incrementally once stale."
     ),
 )
 async def sync_wiki_cache_endpoint(
@@ -138,24 +141,39 @@ async def sync_wiki_cache_endpoint(
 @app.get(
     "/azure/wiki/cache/search",
     operation_id="search_azure_devops_wiki_cache",
-    description="Full-text search over the cached wiki pages (path + content) using SQLite FTS5. Requires a prior sync via sync_azure_devops_wiki_cache. Query supports FTS5 syntax (phrases in quotes, AND/OR/NOT, prefix*).",
+    description=(
+        "Full-text search over the cached wiki pages (path + content) using SQLite FTS5. "
+        "Query supports FTS5 syntax (phrases in quotes, AND/OR/NOT, prefix*). Before "
+        "searching, refreshes the cache incrementally if it's older than stale_after_seconds "
+        "(default WIKI_CACHE_STALE_SECONDS, 1 day) — cheap: one bulk 'what changed' call, "
+        "content re-fetched only for new/changed pages. Still requires a first "
+        "sync_azure_devops_wiki_cache call for wikis never seen before."
+    ),
 )
 async def search_wiki_cache_endpoint(
     q: str = Query(description="FTS5 search query"),
     wiki_id: Optional[str] = Query(default=None, description="Restrict results to a specific wiki. If omitted, searches across all cached wikis."),
     limit: int = Query(default=20, description="Maximum number of results to return"),
+    stale_after_seconds: Optional[int] = Query(default=None, description="Override the staleness threshold (seconds) for this call. Defaults to WIKI_CACHE_STALE_SECONDS."),
 ):
+    ensure_wiki_cache_fresh(wiki_id=wiki_id, stale_after_seconds=stale_after_seconds)
     return search_wiki_cache(query=q, wiki_id=wiki_id, limit=limit)
 
 
 @app.get(
     "/azure/wiki/cache/tree",
     operation_id="get_azure_devops_wiki_cache_tree",
-    description="Get the cached wiki page hierarchy as a nested tree (no Azure DevOps API calls, reflects the last sync). Requires a prior sync via sync_azure_devops_wiki_cache.",
+    description=(
+        "Get the cached wiki page hierarchy as a nested tree. Refreshes the cache "
+        "incrementally first if it's older than stale_after_seconds (see "
+        "search_azure_devops_wiki_cache)."
+    ),
 )
 async def get_wiki_cache_tree_endpoint(
     wiki_id: Optional[str] = Query(default=None, description="Restrict to a specific wiki. If omitted, returns trees for all cached wikis."),
+    stale_after_seconds: Optional[int] = Query(default=None, description="Override the staleness threshold (seconds) for this call. Defaults to WIKI_CACHE_STALE_SECONDS."),
 ):
+    ensure_wiki_cache_fresh(wiki_id=wiki_id, stale_after_seconds=stale_after_seconds)
     return get_wiki_tree(wiki_id=wiki_id)
 
 
@@ -165,18 +183,20 @@ async def get_wiki_cache_tree_endpoint(
     description=(
         "Get the cached folder/path structure (no content) of the subtree rooted at a specific "
         "page — e.g. root_page_id=589 for '/Wiki Nivello/Produto & Agilidade' returns that page "
-        "plus every descendant path underneath it, nested as sub_pages. No Azure DevOps API calls; "
-        "reflects the last sync. Requires a prior sync via sync_azure_devops_wiki_cache. Pass "
-        "exactly one of root_page_id or root_path."
+        "plus every descendant path underneath it, nested as sub_pages. Refreshes the cache "
+        "incrementally first if it's older than stale_after_seconds (see "
+        "search_azure_devops_wiki_cache). Pass exactly one of root_page_id or root_path."
     ),
 )
 async def get_wiki_cache_structure_endpoint(
     wiki_id: str = Query(description="ID or name of the wiki"),
     root_page_id: Optional[int] = Query(default=None, description="Page ID to root the subtree at"),
     root_path: Optional[str] = Query(default=None, description="Page path to root the subtree at (used if root_page_id is omitted)"),
+    stale_after_seconds: Optional[int] = Query(default=None, description="Override the staleness threshold (seconds) for this call. Defaults to WIKI_CACHE_STALE_SECONDS."),
 ):
     if root_page_id is None and root_path is None:
         raise HTTPException(status_code=400, detail="root_page_id or root_path is required")
+    ensure_wiki_cache_fresh(wiki_id=wiki_id, stale_after_seconds=stale_after_seconds)
     subtree = get_wiki_subtree(wiki_id=wiki_id, root_page_id=root_page_id, root_path=root_path)
     if subtree is None:
         raise HTTPException(status_code=404, detail="Page not found in cache. Has this wiki been synced?")
@@ -186,9 +206,15 @@ async def get_wiki_cache_structure_endpoint(
 @app.get(
     "/azure/wiki/cache/status",
     operation_id="get_azure_devops_wiki_cache_status",
-    description="Get cache stats per wiki: page count, pages with content cached, and the last sync timestamp.",
+    description=(
+        "Get cache stats per wiki: page count, pages with content cached, and the last sync "
+        "timestamp. Refreshes the cache incrementally first if it's older than "
+        "stale_after_seconds (see search_azure_devops_wiki_cache)."
+    ),
 )
 async def get_wiki_cache_status_endpoint(
     wiki_id: Optional[str] = Query(default=None, description="Restrict to a specific wiki. If omitted, returns stats for all cached wikis."),
+    stale_after_seconds: Optional[int] = Query(default=None, description="Override the staleness threshold (seconds) for this call. Defaults to WIKI_CACHE_STALE_SECONDS."),
 ):
+    ensure_wiki_cache_fresh(wiki_id=wiki_id, stale_after_seconds=stale_after_seconds)
     return get_wiki_cache_status(wiki_id=wiki_id)

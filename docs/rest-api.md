@@ -74,17 +74,28 @@ is always `null` and each wiki returns up to `top` pages with no further paginat
 
 Entirely separate from the live `/azure/wiki*` endpoints above (those always hit the
 API — the cache is purely additive). See [Wiki Cache Internals](wiki-cache.md) for the
-schema and sync flow behind these.
+schema and sync/staleness flow behind these.
 
-- `POST /azure/wiki/cache/sync` (`wiki_id` required, `fetch_content` default `true`) fully
-  replaces that wiki's cached rows. Can be slow for large wikis (one API call per page
-  when `fetch_content=true`; e.g. ~0.4s structure-only vs. ~20-120s with content for 417
-  pages, depending on API latency). The cache starts empty — nothing else here works
-  until this is called at least once.
+Freshness is automatic: every `GET` below calls `ensure_wiki_cache_fresh` first, which
+incrementally refreshes the cache (fetching content only for pages that are new or
+changed, via one cheap bulk "what changed" call) if it's older than
+`stale_after_seconds` (query param on each endpoint; defaults to the
+`WIKI_CACHE_STALE_SECONDS` env var, 1 day). A wiki still needs a first sync — manual or
+the automatic one on server startup — before it has anything to serve.
+
+- `POST /azure/wiki/cache/sync` (`wiki_id` required, `fetch_content` default `true`) —
+  forces a full bootstrap/reset resync, unconditionally replacing that wiki's cached
+  rows. Can be slow for large wikis (one API call per page when `fetch_content=true`;
+  e.g. ~0.4s structure-only vs. ~20-120s with content for 417 pages, depending on API
+  latency). Every wiki in the project is also resynced this way automatically, in the
+  background, every time the server starts — this endpoint is for a wiki's first-ever
+  sync (if you don't want to wait for the next restart) or an explicit forced reset.
 - `GET /azure/wiki/cache/search?q=...` — `q` supports FTS5 syntax (phrases in quotes,
-  `AND`/`OR`/`NOT`, `prefix*`); optional `wiki_id`, `limit` (default 20).
-- `GET /azure/wiki/cache/tree` — optional `wiki_id`; omit for trees across all cached wikis.
+  `AND`/`OR`/`NOT`, `prefix*`); optional `wiki_id`, `limit` (default 20), `stale_after_seconds`.
+- `GET /azure/wiki/cache/tree` — optional `wiki_id` (omit for trees across all cached
+  wikis), `stale_after_seconds`.
 - `GET /azure/wiki/cache/structure` — requires `wiki_id`, and exactly one of
-  `root_page_id`/`root_path`. Returns `400` if neither is given, `404` if the page isn't
-  in the cache.
-- `GET /azure/wiki/cache/status` — optional `wiki_id`; omit for stats across all cached wikis.
+  `root_page_id`/`root_path`; optional `stale_after_seconds`. Returns `400` if neither
+  `root_page_id` nor `root_path` is given, `404` if the page isn't in the cache.
+- `GET /azure/wiki/cache/status` — optional `wiki_id` (omit for stats across all cached
+  wikis), `stale_after_seconds`.

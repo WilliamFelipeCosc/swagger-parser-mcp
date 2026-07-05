@@ -21,9 +21,10 @@ def _parent_path(path: str) -> Optional[str]:
 
 def replace_wiki_pages(wiki_id: str, pages: list) -> dict:
     """Replaces all cached rows for `wiki_id`. `pages` is a list of
-    {"page_id": int, "path": str, "content": Optional[str]}; this function sorts them
-    shallowest-first internally so each page's parent_id (an in-memory path -> structure_id
-    map) is always already known by the time its children are inserted."""
+    {"page_id": int, "path": str, "content": Optional[str], "git_item_path": Optional[str],
+    "content_modified_at": Optional[str]}; this function sorts them shallowest-first
+    internally so each page's parent_id (an in-memory path -> structure_id map) is always
+    already known by the time its children are inserted."""
     sorted_pages = sorted(pages, key=lambda page: _path_depth(page["path"]))
     synced_at = datetime.now(timezone.utc).isoformat()
     content_fetched = 0
@@ -42,10 +43,19 @@ def replace_wiki_pages(wiki_id: str, pages: list) -> dict:
             parent_id = path_to_id.get(_parent_path(page["path"]))
             cursor = db.execute(
                 """
-                INSERT INTO wiki_structure (wiki_id, page_id, path, name, parent_id, depth, structure_synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO wiki_structure (wiki_id, page_id, path, name, parent_id, depth, structure_synced_at, git_item_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (wiki_id, page["page_id"], page["path"], _path_name(page["path"]), parent_id, _path_depth(page["path"]), synced_at),
+                (
+                    wiki_id,
+                    page["page_id"],
+                    page["path"],
+                    _path_name(page["path"]),
+                    parent_id,
+                    _path_depth(page["path"]),
+                    synced_at,
+                    page.get("git_item_path"),
+                ),
             )
             structure_id = cursor.lastrowid
             path_to_id[page["path"]] = structure_id
@@ -56,8 +66,11 @@ def replace_wiki_pages(wiki_id: str, pages: list) -> dict:
                 content_fetched += 1
 
             db.execute(
-                "INSERT INTO wiki_page_content (structure_id, content, content_synced_at) VALUES (?, ?, ?)",
-                (structure_id, content, content_synced_at),
+                """
+                INSERT INTO wiki_page_content (structure_id, content, content_synced_at, content_modified_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (structure_id, content, content_synced_at, page.get("content_modified_at")),
             )
             db.execute(
                 "INSERT INTO wiki_pages_fts (rowid, path, content) VALUES (?, ?, ?)",
@@ -74,6 +87,71 @@ def replace_wiki_pages(wiki_id: str, pages: list) -> dict:
         "content_fetched": content_fetched,
         "synced_at": synced_at,
     }
+
+
+def get_cached_wiki_pages(wiki_id: str) -> dict:
+    """Returns cached pages for `wiki_id` keyed by page_id, each with path, git_item_path,
+    content, and content_modified_at — the shape needed to diff against a live listing in
+    check_and_refresh_wiki_cache."""
+    db = _get_db_connection()
+    try:
+        rows = db.execute(
+            """
+            SELECT ws.page_id, ws.path, ws.git_item_path, wpc.content, wpc.content_modified_at
+            FROM wiki_structure ws
+            LEFT JOIN wiki_page_content wpc ON wpc.structure_id = ws.id
+            WHERE ws.wiki_id = ?
+            """,
+            (wiki_id,),
+        ).fetchall()
+    finally:
+        db.close()
+
+    return {
+        row["page_id"]: {
+            "path": row["path"],
+            "git_item_path": row["git_item_path"],
+            "content": row["content"],
+            "content_modified_at": row["content_modified_at"],
+        }
+        for row in rows
+    }
+
+
+def get_all_cached_wiki_ids() -> list:
+    db = _get_db_connection()
+    try:
+        rows = db.execute("SELECT DISTINCT wiki_id FROM wiki_structure").fetchall()
+    finally:
+        db.close()
+    return [row["wiki_id"] for row in rows]
+
+
+def get_wiki_cache_last_checked_at(wiki_id: str) -> Optional[str]:
+    db = _get_db_connection()
+    try:
+        row = db.execute(
+            "SELECT last_checked_at FROM wiki_cache_check_state WHERE wiki_id = ?", (wiki_id,)
+        ).fetchone()
+    finally:
+        db.close()
+    return row["last_checked_at"] if row else None
+
+
+def record_wiki_cache_check(wiki_id: str, checked_at: Optional[str] = None) -> None:
+    checked_at = checked_at or datetime.now(timezone.utc).isoformat()
+    db = _get_db_connection()
+    try:
+        db.execute(
+            """
+            INSERT INTO wiki_cache_check_state (wiki_id, last_checked_at) VALUES (?, ?)
+            ON CONFLICT(wiki_id) DO UPDATE SET last_checked_at = excluded.last_checked_at
+            """,
+            (wiki_id, checked_at),
+        )
+        db.commit()
+    finally:
+        db.close()
 
 
 def search_wiki_cache(query: str, wiki_id: Optional[str] = None, limit: int = 20) -> list:

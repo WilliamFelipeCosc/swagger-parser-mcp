@@ -77,15 +77,19 @@ Page-lookup results mirror the `get_wiki_page_by_path`/`get_wiki_page_by_id` sha
 
 ### `services/mcp/resources/wiki_cache.py`
 
-Reads only from the local SQLite cache — no Azure API calls, no live-ness guarantee.
-Requires a prior `sync_azure_devops_wiki_cache` tool call for the target wiki.
+Reads from the local SQLite cache. Each of these calls `ensure_wiki_cache_fresh` first,
+which auto-refreshes incrementally (only fetching content for new/changed pages) if the
+cache is older than `stale_after_seconds` (default `WIKI_CACHE_STALE_SECONDS`, 1 day) —
+see [Wiki Cache Internals](wiki-cache.md). A wiki still needs one prior
+`sync_azure_devops_wiki_cache` call (or the automatic startup sync) before it has
+anything to serve at all.
 
 | URI Template | Params | Description |
 |---|---|---|
-| `wiki-cache://tree{?wiki_id}` | `wiki_id` (optional — all wikis if omitted) | Full cached page hierarchy as a nested tree |
-| `wiki-cache://{wiki_id}/structure{?root_page_id,root_path}` | `wiki_id`, one of `root_page_id`/`root_path` | Folder/path subtree (no content) rooted at one page |
-| `wiki-cache://status{?wiki_id}` | `wiki_id` (optional) | Page count, pages-with-content, last sync time per wiki |
-| `wiki-cache://search{?q,wiki_id,limit}` | `q` (required, FTS5 syntax), `wiki_id` (optional), `limit` (default 20) | Full-text search over cached path+content |
+| `wiki-cache://tree{?wiki_id,stale_after_seconds}` | `wiki_id` (optional — all wikis if omitted), `stale_after_seconds` (optional override) | Full cached page hierarchy as a nested tree |
+| `wiki-cache://{wiki_id}/structure{?root_page_id,root_path,stale_after_seconds}` | `wiki_id`, one of `root_page_id`/`root_path`, `stale_after_seconds` | Folder/path subtree (no content) rooted at one page |
+| `wiki-cache://status{?wiki_id,stale_after_seconds}` | `wiki_id` (optional), `stale_after_seconds` | Page count, pages-with-content, last sync time per wiki |
+| `wiki-cache://search{?q,wiki_id,limit,stale_after_seconds}` | `q` (required, FTS5 syntax), `wiki_id` (optional), `limit` (default 20), `stale_after_seconds` | Full-text search over cached path+content |
 
 ## Tools
 
@@ -105,7 +109,7 @@ match (`Active`, `New`, `Closed`, ...).
 
 | Tool | Parameters | Description |
 |---|---|---|
-| `sync_azure_devops_wiki_cache` | `wiki_id` (required), `fetch_content?` (default `true`) | Rebuilds the local cache for one wiki. The only mutating MCP operation — everything else is a read. Can take 20–120s+ for large wikis with `fetch_content=true` (one API call per page) |
+| `sync_azure_devops_wiki_cache` | `wiki_id` (required), `fetch_content?` (default `true`) | Forces a full bootstrap/reset resync of one wiki. The only mutating MCP operation — everything else is a read. Can take 20–120s+ for large wikis with `fetch_content=true` (one API call per page). Only needed for a wiki's first-ever sync or a forced reset — every wiki is also auto-synced in the background on server startup, and the resources above auto-refresh incrementally once stale |
 
 ## Prompts
 
@@ -126,6 +130,9 @@ await client.read_resource("wiki-cache://tree?wiki_id=MyProject.wiki")
 
 # Resource: search the cache
 await client.read_resource("wiki-cache://search?q=onboarding&wiki_id=MyProject.wiki")
+
+# Resource: force a stricter staleness check for this one call (5 minutes instead of the 1-day default)
+await client.read_resource("wiki-cache://status?wiki_id=MyProject.wiki&stale_after_seconds=300")
 
 # Tool: tasks for a given PBI, in the current sprint
 await client.call_tool("get_azure_devops_tasks", {"parent_id": 1234, "current_sprint": True})
