@@ -141,6 +141,19 @@ def get_pbis(
     )
 
 
+def _extract_wiki_page_fields(page, wiki_id: str, wiki_name: Optional[str] = None) -> dict:
+    return {
+        "wiki_id": wiki_id,
+        "wiki_name": wiki_name,
+        "page_id": page.id,
+        "path": page.path,
+        "content": getattr(page, "content", None),
+        "is_parent_page": page.is_parent_page,
+        "order": page.order,
+        "url": page.remote_url,
+    }
+
+
 def get_wiki_pages(wiki_id: Optional[str] = None) -> list:
     connection = _get_connection()
     project = _get_project()
@@ -168,10 +181,38 @@ def get_wiki_pages(wiki_id: Optional[str] = None) -> list:
                     "wiki_name": wiki.name,
                     "page_id": page.id,
                     "path": page.path,
-                    "content": page.content,
-                    "url": page.remote_url,
                 })
         except Exception:
             pass
 
     return results
+
+
+def get_wiki_page_by_path(path: str, wiki_id: Optional[str] = None) -> dict:
+    connection = _get_connection()
+    project = _get_project()
+    wiki_client = connection.clients.get_wiki_client()
+
+    wiki_identifier = wiki_id or project
+    response = wiki_client.get_page(
+        project=project,
+        wiki_identifier=wiki_identifier,
+        path=path,
+        include_content=True,
+    )
+    return _extract_wiki_page_fields(response.page, wiki_identifier)
+
+
+def get_wiki_page_by_id(page_id: int, wiki_id: Optional[str] = None) -> dict:
+    connection = _get_connection()
+    project = _get_project()
+    wiki_client = connection.clients.get_wiki_client()
+
+    wiki_identifier = wiki_id or project
+    response = wiki_client.get_page_by_id(
+        project=project,
+        wiki_identifier=wiki_identifier,
+        id=page_id,
+        include_content=True,
+    )
+    return _extract_wiki_page_fields(response.page, wiki_identifier)
