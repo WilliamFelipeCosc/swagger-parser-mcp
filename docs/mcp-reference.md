@@ -105,6 +105,30 @@ display name; `team` scopes `@CurrentIteration` to the right team's board; `curr
 takes priority over `sprint` (a substring match on iteration path); `state` is an exact
 match (`Active`, `New`, `Closed`, ...).
 
+#### Wiki context via elicitation (`get_azure_devops_pbis` only)
+
+When `id` is given and exactly one PBI comes back, the tool takes an injected `ctx:
+Context` parameter (invisible in the tool's schema — FastMCP auto-injects it) and calls:
+
+```python
+result = await ctx.elicit(
+    message=f"Gostaria de pesquisar a wiki por contexto adicional sobre a PBI #{pbi['id']} ({pbi['title']})?",
+    response_type=None,
+)
+```
+
+- `result.action == "accept"` → sanitizes the PBI's title (strips FTS5 syntax characters
+  `" ( ) : * ^ { }`, so a title like `Fix bug (urgent): "login" crashes*` becomes `Fix bug
+  urgent login crashes`) and runs it through `ensure_wiki_cache_fresh()` +
+  `search_wiki_cache(query=title, limit=5)`, attaching the result list as `wiki_context`
+  on the PBI dict.
+- `result.action in ("decline", "cancel")`, or the client doesn't implement an
+  elicitation handler at all (`ctx.elicit()` raises — caught and treated the same as a
+  decline) → no `wiki_context` key is added; the PBI dict is unchanged.
+- More than one PBI returned (no `id`, or `top > 1`) → elicitation isn't attempted at
+  all, for any PBI. Extracting "the" keywords doesn't generalize cleanly to a batch, so
+  this feature is scoped to single-PBI lookups only.
+
 ### `services/mcp/tools/wiki_cache_sync.py`
 
 | Tool | Parameters | Description |
@@ -136,6 +160,14 @@ await client.read_resource("wiki-cache://status?wiki_id=MyProject.wiki&stale_aft
 
 # Tool: tasks for a given PBI, in the current sprint
 await client.call_tool("get_azure_devops_tasks", {"parent_id": 1234, "current_sprint": True})
+
+# Tool: single PBI by id — client needs an elicitation_handler to answer the wiki-search prompt
+async def elicitation_handler(message, response_type, params, context):
+    return ElicitResult(action="accept")  # or "decline"
+
+async with Client(mcp_server, elicitation_handler=elicitation_handler) as client:
+    result = await client.call_tool("get_azure_devops_pbis", {"id": 1234})
+    # result.data[0] may now include a "wiki_context" key
 
 # Prompt: sprint report for a team
 await client.get_prompt("sprint_status_report", {"team": "Platform"})
