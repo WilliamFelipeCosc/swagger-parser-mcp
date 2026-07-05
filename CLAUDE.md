@@ -29,7 +29,11 @@ This project exposes a Swagger/OpenAPI parser as both a REST API and an MCP (Mod
 - `internal/main.py` — core logic: fetches Swagger JSON URLs from env vars, resolves `$ref`s via `jsonref`, and exposes three functions: `get_enums`, `get_paths`, `get_modules`
 - `services/main.py` — FastAPI app wrapping the three internal functions as REST endpoints (`/{version}/enums`, `/{version}/modules`, `/{version}/paths/{module_name}`), plus Azure DevOps endpoints
 - `services/mcp.py` — uses `FastMCP.from_fastapi()` to auto-generate an MCP server from the FastAPI app, then merges both into a single `combined_app` (FastAPI with both route sets and the MCP lifespan)
-- `internal/azure_devops.py` — Azure DevOps integration using the `azure-devops` Python SDK; exposes `get_tasks`, `get_pbis`, `get_wiki_pages`, `get_wiki_page_by_path`, and `get_wiki_page_by_id`
+- `internal/azure_devops/` — Azure DevOps integration using the `azure-devops` Python SDK, split by concern:
+  - `shared.py` — `_get_connection`/`_get_project`, used by both submodules below
+  - `tasks.py` — Tasks/PBIs (board) integration; exposes `get_tasks`, `get_pbis`
+  - `wiki.py` — Wiki integration; exposes `get_wiki_pages`, `get_wiki_page_by_path`, `get_wiki_page_by_id`
+  - `__init__.py` re-exports all five functions, so callers still do `from internal.azure_devops import ...`
 
 **Environment variables** (`.env`):
 - `SWAGGER_JSON_V1_URL` — URL to v1 Swagger JSON
@@ -70,6 +74,6 @@ All endpoints are under `/azure/` and auto-exposed as MCP tools.
 - `/azure/wiki/page` and `/azure/wiki/page/{page_id}` accept an optional `wiki_id`; if omitted, it defaults to the project's default wiki (name == project name, the standard Azure DevOps convention).
 - Both page-lookup endpoints return `wiki_id`, `wiki_name` (null unless resolved from a listed wiki), `page_id`, `path`, `content`, `is_parent_page`, `order`, `url`, `sub_pages`, and `sub_pages_truncated`.
 
-**Wiki subpages** (`/azure/wiki/page`, `/azure/wiki/page/{page_id}`): if a page has children, `sub_pages` recursively nests every descendant (with its own content and `sub_pages`), mirroring the wiki's hierarchy. Azure DevOps' `recursionLevel=full` only returns descendant paths, not content or IDs, so each descendant's content is fetched with a separate `get_page` call. Capped at `MAX_SUBPAGES_FETCHED` (50, in `internal/azure_devops.py`) total descendants per request; if the cap is hit, `sub_pages_truncated` is `true` and the remaining descendants at that point in the tree are omitted.
+**Wiki subpages** (`/azure/wiki/page`, `/azure/wiki/page/{page_id}`): if a page has children, `sub_pages` recursively nests every descendant (with its own content and `sub_pages`), mirroring the wiki's hierarchy. Azure DevOps' `recursionLevel=full` only returns descendant paths, not content or IDs, so each descendant's content is fetched with a separate `get_page` call. Capped at `MAX_SUBPAGES_FETCHED` (50, in `internal/azure_devops/wiki.py`) total descendants per request; if the cap is hit, `sub_pages_truncated` is `true` and the remaining descendants at that point in the tree are omitted.
 
 **Wiki pagination** (`/azure/wiki`): response shape is `{"pages": [...], "continuation_token": ...}`. Pass `top` and `continuation_token` (from a previous response) to page through a single wiki's pages — this only works when `wiki_id` is set, since Azure DevOps continuation tokens are per-wiki. When `wiki_id` is omitted (listing all wikis), `continuation_token` is always `null` and each wiki returns up to `top` pages with no further pagination.
