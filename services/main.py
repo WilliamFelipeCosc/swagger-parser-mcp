@@ -59,12 +59,22 @@ async def get_pbis_endpoint(
 @app.get(
     "/azure/wiki",
     operation_id="get_azure_devops_wiki_pages",
-    description="List wiki pages from Azure DevOps (metadata only: page_id, path). Returns all wikis in the project by default. Optionally pass wiki_id to target a specific wiki. Use get_azure_devops_wiki_page_by_path or get_azure_devops_wiki_page_by_id to fetch a page's content.",
+    description=(
+        "List wiki pages from Azure DevOps (metadata only: page_id, path). Returns "
+        "{\"pages\": [...], \"continuation_token\": ...}. Pass wiki_id to target a specific wiki; "
+        "pagination (top, continuation_token) only takes effect when wiki_id is set — pass the "
+        "returned continuation_token back in to fetch the next page. If wiki_id is omitted, all "
+        "wikis in the project are listed (up to `top` pages each, no pagination, continuation_token "
+        "is always null). Use get_azure_devops_wiki_page_by_path or get_azure_devops_wiki_page_by_id "
+        "to fetch a page's content."
+    ),
 )
 async def get_wiki_pages_endpoint(
     wiki_id: Optional[str] = Query(default=None, description="ID or name of a specific wiki. If omitted, all wikis are returned."),
+    top: int = Query(default=100, description="Maximum number of pages to return (per wiki, if wiki_id is omitted)"),
+    continuation_token: Optional[str] = Query(default=None, description="Token from a previous response's continuation_token, to fetch the next page. Only effective when wiki_id is set."),
 ):
-    return get_wiki_pages(wiki_id=wiki_id)
+    return get_wiki_pages(wiki_id=wiki_id, top=top, continuation_token=continuation_token)
 
 
 @app.get(
