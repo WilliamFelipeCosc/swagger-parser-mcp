@@ -55,10 +55,11 @@ def get_azure_devops_tasks(
         "Get Azure DevOps Product Backlog Items (PBIs). Filter by id (exact), assignee "
         "(substring), team/sprint board, current sprint (@CurrentIteration), sprint name "
         "(substring), or state. When fetching a single PBI by id, asks (via MCP "
-        "elicitation) whether to also search the wiki cache for additional context using "
-        "the PBI's title — if accepted, adds a wiki_context field (see "
+        "elicitation) for a search term to look up additional context in the wiki cache "
+        "— if one is provided, adds a wiki_context field (see "
         "search_azure_devops_wiki_cache's result shape) to that PBI. Skipped entirely if "
-        "the client doesn't support elicitation, or if more than one PBI is returned."
+        "the client doesn't support elicitation, if more than one PBI is returned, or if "
+        "the user declines/cancels/leaves the term blank."
     ),
 )
 async def get_azure_devops_pbis(
@@ -86,16 +87,17 @@ async def get_azure_devops_pbis(
         try:
             elicitation = await ctx.elicit(
                 message=(
-                    f"Gostaria de pesquisar a wiki por contexto adicional sobre a PBI "
-                    f"#{pbi['id']} ({pbi['title']})?"
+                    f"Deseja pesquisar a wiki por contexto adicional sobre a PBI "
+                    f"#{pbi['id']} ({pbi['title']})? Digite o termo de busca."
                 ),
-                response_type=None,
+                response_type=str,
+                response_title="Termo de busca",
             )
         except Exception:
             elicitation = None
 
         if elicitation is not None and elicitation.action == "accept":
-            query = _sanitize_fts5_query(pbi.get("title") or "")
+            query = _sanitize_fts5_query(elicitation.data or "")
             if query:
                 ensure_wiki_cache_fresh()
                 pbi["wiki_context"] = search_wiki_cache(query=query, limit=5)
