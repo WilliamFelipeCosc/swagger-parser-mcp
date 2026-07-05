@@ -33,7 +33,8 @@ This project exposes a Swagger/OpenAPI parser as both a REST API and an MCP (Mod
   - `shared.py` — `_get_connection`/`_get_project`, used by both submodules below
   - `tasks.py` — Tasks/PBIs (board) integration; exposes `get_tasks`, `get_pbis`
   - `wiki.py` — Wiki integration; exposes `get_wiki_pages`, `get_wiki_page_by_path`, `get_wiki_page_by_id`
-  - `__init__.py` re-exports all five functions, so callers still do `from internal.azure_devops import ...`
+  - `cache.py` — local SQLite+FTS5 cache of wiki structure/content; exposes `sync_wiki_cache`, `search_wiki_cache`, `get_wiki_tree`, `get_wiki_cache_status`
+  - `__init__.py` re-exports all nine functions, so callers still do `from internal.azure_devops import ...`
 
 **Environment variables** (`.env`):
 - `SWAGGER_JSON_V1_URL` — URL to v1 Swagger JSON
@@ -57,6 +58,10 @@ All endpoints are under `/azure/` and auto-exposed as MCP tools.
 | `GET /azure/wiki` | `get_azure_devops_wiki_pages` | List wiki pages (metadata only: `page_id`, `path` — no content) |
 | `GET /azure/wiki/page` | `get_azure_devops_wiki_page_by_path` | Fetch a wiki page's content by `path` |
 | `GET /azure/wiki/page/{page_id}` | `get_azure_devops_wiki_page_by_id` | Fetch a wiki page's content by `page_id` |
+| `POST /azure/wiki/cache/sync` | `sync_azure_devops_wiki_cache` | Rebuild the local cache for one wiki (structure + content) |
+| `GET /azure/wiki/cache/search` | `search_azure_devops_wiki_cache` | Full-text search over the cached wiki (FTS5) |
+| `GET /azure/wiki/cache/tree` | `get_azure_devops_wiki_cache_tree` | Get the cached page hierarchy as a nested tree (no API calls) |
+| `GET /azure/wiki/cache/status` | `get_azure_devops_wiki_cache_status` | Get cache stats (page count, last sync) per wiki |
 
 **Shared query params for `/azure/tasks` and `/azure/pbis`:**
 - `id` — fetch a single item by work item ID
@@ -77,3 +82,10 @@ All endpoints are under `/azure/` and auto-exposed as MCP tools.
 **Wiki subpages** (`/azure/wiki/page`, `/azure/wiki/page/{page_id}`): if a page has children, `sub_pages` recursively nests every descendant (with its own content and `sub_pages`), mirroring the wiki's hierarchy. Azure DevOps' `recursionLevel=full` only returns descendant paths, not content or IDs, so each descendant's content is fetched with a separate `get_page` call. Capped at `MAX_SUBPAGES_FETCHED` (50, in `internal/azure_devops/wiki.py`) total descendants per request; if the cap is hit, `sub_pages_truncated` is `true` and the remaining descendants at that point in the tree are omitted.
 
 **Wiki pagination** (`/azure/wiki`): response shape is `{"pages": [...], "continuation_token": ...}`. Pass `top` and `continuation_token` (from a previous response) to page through a single wiki's pages — this only works when `wiki_id` is set, since Azure DevOps continuation tokens are per-wiki. When `wiki_id` is omitted (listing all wikis), `continuation_token` is always `null` and each wiki returns up to `top` pages with no further pagination.
+
+**Wiki cache** (`internal/azure_devops/cache.py`): a local SQLite database (`data/wiki_cache.db` by default; override with `WIKI_CACHE_DB_PATH`) caching wiki structure and content for full-text search, entirely separate from the live `/azure/wiki*` endpoints above (those still always hit the API — the cache is purely additive).
+- `sync_azure_devops_wiki_cache` (`wiki_id` required, `fetch_content` default `true`) fully replaces that wiki's cached rows: paginates through every page via `GetPagesBatch`, then (if `fetch_content`) fetches each page's content individually — there's no bulk-content API, so this is one call per page and can take minutes on large wikis (417 pages ≈ 2 minutes in testing). The cache starts empty; nothing else here works until this is called at least once.
+- Schema: `wiki_pages` (`wiki_id`, `page_id`, `path`, `parent_path`, `depth`, `content`, sync timestamps) plus an external-content `wiki_pages_fts` FTS5 table over `(path, content)`, rebuilt via `INSERT INTO wiki_pages_fts(wiki_pages_fts) VALUES ('rebuild')` after each sync (no triggers — the whole table is replaced per sync, not updated incrementally).
+- `search_azure_devops_wiki_cache` takes an FTS5 `MATCH` query (phrases in quotes, `AND`/`OR`/`NOT`, `prefix*`) and returns ranked results with snippets.
+- `get_azure_devops_wiki_cache_tree` rebuilds the hierarchy from cached `parent_path` values with zero API calls — reflects the state as of the last sync, not live data.
+- `get_azure_devops_wiki_cache_status` reports page count / pages-with-content / last sync time per wiki, useful for checking staleness before relying on search or tree results.

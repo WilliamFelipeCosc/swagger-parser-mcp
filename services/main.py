@@ -2,7 +2,17 @@ from fastapi import FastAPI, Query
 from typing import Optional
 from services.params import swagger_version
 from internal.main import get_enums, get_modules, get_paths
-from internal.azure_devops import get_tasks, get_pbis, get_wiki_pages, get_wiki_page_by_path, get_wiki_page_by_id
+from internal.azure_devops import (
+    get_tasks,
+    get_pbis,
+    get_wiki_pages,
+    get_wiki_page_by_path,
+    get_wiki_page_by_id,
+    sync_wiki_cache,
+    search_wiki_cache,
+    get_wiki_tree,
+    get_wiki_cache_status,
+)
 
 app = FastAPI()
 
@@ -99,3 +109,55 @@ async def get_wiki_page_by_id_endpoint(
     wiki_id: Optional[str] = Query(default=None, description="ID or name of the wiki. Defaults to the project's default wiki if omitted."),
 ):
     return get_wiki_page_by_id(page_id=page_id, wiki_id=wiki_id)
+
+
+@app.post(
+    "/azure/wiki/cache/sync",
+    operation_id="sync_azure_devops_wiki_cache",
+    description=(
+        "Rebuilds the local SQLite+FTS5 cache for one wiki: paginates through every page and "
+        "(by default) fetches each page's content individually, then replaces that wiki's cached "
+        "rows. Can be slow for large wikis (one API call per page when fetch_content=true). Call "
+        "this before using search/tree/status — the cache starts empty."
+    ),
+)
+async def sync_wiki_cache_endpoint(
+    wiki_id: str = Query(description="ID or name of the wiki to sync"),
+    fetch_content: bool = Query(default=True, description="Fetch each page's content for full-text search. If false, only structure (path/hierarchy) is cached."),
+):
+    return sync_wiki_cache(wiki_id=wiki_id, fetch_content=fetch_content)
+
+
+@app.get(
+    "/azure/wiki/cache/search",
+    operation_id="search_azure_devops_wiki_cache",
+    description="Full-text search over the cached wiki pages (path + content) using SQLite FTS5. Requires a prior sync via sync_azure_devops_wiki_cache. Query supports FTS5 syntax (phrases in quotes, AND/OR/NOT, prefix*).",
+)
+async def search_wiki_cache_endpoint(
+    q: str = Query(description="FTS5 search query"),
+    wiki_id: Optional[str] = Query(default=None, description="Restrict results to a specific wiki. If omitted, searches across all cached wikis."),
+    limit: int = Query(default=20, description="Maximum number of results to return"),
+):
+    return search_wiki_cache(query=q, wiki_id=wiki_id, limit=limit)
+
+
+@app.get(
+    "/azure/wiki/cache/tree",
+    operation_id="get_azure_devops_wiki_cache_tree",
+    description="Get the cached wiki page hierarchy as a nested tree (no Azure DevOps API calls, reflects the last sync). Requires a prior sync via sync_azure_devops_wiki_cache.",
+)
+async def get_wiki_cache_tree_endpoint(
+    wiki_id: Optional[str] = Query(default=None, description="Restrict to a specific wiki. If omitted, returns trees for all cached wikis."),
+):
+    return get_wiki_tree(wiki_id=wiki_id)
+
+
+@app.get(
+    "/azure/wiki/cache/status",
+    operation_id="get_azure_devops_wiki_cache_status",
+    description="Get cache stats per wiki: page count, pages with content cached, and the last sync timestamp.",
+)
+async def get_wiki_cache_status_endpoint(
+    wiki_id: Optional[str] = Query(default=None, description="Restrict to a specific wiki. If omitted, returns stats for all cached wikis."),
+):
+    return get_wiki_cache_status(wiki_id=wiki_id)
