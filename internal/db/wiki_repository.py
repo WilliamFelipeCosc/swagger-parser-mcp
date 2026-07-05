@@ -154,17 +154,38 @@ def record_wiki_cache_check(wiki_id: str, checked_at: Optional[str] = None) -> N
         db.close()
 
 
+def _get_breadcrumb(db, structure_id: int) -> list:
+    """Ancestor chain (root first, immediate parent last) for a page, walking parent_id
+    upward via a recursive CTE. Excludes the page itself."""
+    rows = db.execute(
+        """
+        WITH RECURSIVE ancestors(id, page_id, path, name, parent_id, depth) AS (
+            SELECT id, page_id, path, name, parent_id, depth FROM wiki_structure WHERE id = :start_id
+            UNION ALL
+            SELECT ws.id, ws.page_id, ws.path, ws.name, ws.parent_id, ws.depth
+            FROM wiki_structure ws JOIN ancestors a ON ws.id = a.parent_id
+        )
+        SELECT page_id, path, name FROM ancestors WHERE id != :start_id ORDER BY depth ASC
+        """,
+        {"start_id": structure_id},
+    ).fetchall()
+    return [{"page_id": row["page_id"], "path": row["path"], "name": row["name"]} for row in rows]
+
+
 def search_wiki_cache(query: str, wiki_id: Optional[str] = None, limit: int = 20) -> list:
     """Full-text search over cached paths/content. `query` is an FTS5 MATCH expression
-    (supports phrases in quotes, AND/OR/NOT, prefix* etc.)."""
+    (supports phrases in quotes, AND/OR/NOT, prefix* etc.). Each result includes the full
+    page content, its breadcrumb (ancestor chain), and which column(s) — path and/or
+    content — the query matched in."""
     db = _get_db_connection()
     try:
         sql = """
-            SELECT ws.wiki_id, ws.page_id, ws.path,
+            SELECT ws.id, ws.wiki_id, ws.page_id, ws.path, wpc.content,
                    snippet(wiki_pages_fts, 1, '[', ']', '...', 10) AS snippet,
                    bm25(wiki_pages_fts) AS rank
             FROM wiki_pages_fts
             JOIN wiki_structure ws ON ws.id = wiki_pages_fts.rowid
+            LEFT JOIN wiki_page_content wpc ON wpc.structure_id = ws.id
             WHERE wiki_pages_fts MATCH ?
         """
         params = [query]
@@ -175,15 +196,48 @@ def search_wiki_cache(query: str, wiki_id: Optional[str] = None, limit: int = 20
         params.append(limit)
 
         rows = db.execute(sql, params).fetchall()
-        return [
-            {
-                "wiki_id": row["wiki_id"],
-                "page_id": row["page_id"],
-                "path": row["path"],
-                "snippet": row["snippet"],
+        structure_ids = [row["id"] for row in rows]
+
+        matched_in_path = set()
+        matched_in_content = set()
+        if structure_ids:
+            placeholders = ",".join("?" for _ in structure_ids)
+            # Parenthesizing the query is required: without it, a column filter like
+            # "{path}: a OR b" only scopes "a" to that column, leaving "b" unscoped.
+            matched_in_path = {
+                row[0]
+                for row in db.execute(
+                    f"SELECT rowid FROM wiki_pages_fts WHERE wiki_pages_fts MATCH ? AND rowid IN ({placeholders})",
+                    [f"{{path}}: ({query})"] + structure_ids,
+                ).fetchall()
             }
-            for row in rows
-        ]
+            matched_in_content = {
+                row[0]
+                for row in db.execute(
+                    f"SELECT rowid FROM wiki_pages_fts WHERE wiki_pages_fts MATCH ? AND rowid IN ({placeholders})",
+                    [f"{{content}}: ({query})"] + structure_ids,
+                ).fetchall()
+            }
+
+        results = []
+        for row in rows:
+            matched_in = []
+            if row["id"] in matched_in_path:
+                matched_in.append("path")
+            if row["id"] in matched_in_content:
+                matched_in.append("content")
+            results.append(
+                {
+                    "wiki_id": row["wiki_id"],
+                    "page_id": row["page_id"],
+                    "path": row["path"],
+                    "breadcrumb": _get_breadcrumb(db, row["id"]),
+                    "matched_in": matched_in,
+                    "snippet": row["snippet"],
+                    "content": row["content"],
+                }
+            )
+        return results
     finally:
         db.close()
 

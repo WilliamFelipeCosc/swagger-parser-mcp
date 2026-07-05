@@ -143,11 +143,14 @@ async def sync_wiki_cache_endpoint(
     operation_id="search_azure_devops_wiki_cache",
     description=(
         "Full-text search over the cached wiki pages (path + content) using SQLite FTS5. "
-        "Query supports FTS5 syntax (phrases in quotes, AND/OR/NOT, prefix*). Before "
-        "searching, refreshes the cache incrementally if it's older than stale_after_seconds "
-        "(default WIKI_CACHE_STALE_SECONDS, 1 day) — cheap: one bulk 'what changed' call, "
-        "content re-fetched only for new/changed pages. Still requires a first "
-        "sync_azure_devops_wiki_cache call for wikis never seen before."
+        "Query supports FTS5 syntax (phrases in quotes, AND/OR/NOT, prefix*) and is "
+        "accent-insensitive by default (e.g. 'adesao' also matches 'adesão'). Each result "
+        "includes the page's full content, its breadcrumb (ancestor page chain from the "
+        "wiki root), and matched_in ('path' and/or 'content', showing where the query "
+        "hit). Before searching, refreshes the cache incrementally if it's older than "
+        "stale_after_seconds (default WIKI_CACHE_STALE_SECONDS, 1 day) — cheap: one bulk "
+        "'what changed' call, content re-fetched only for new/changed pages. Still "
+        "requires a first sync_azure_devops_wiki_cache call for wikis never seen before."
     ),
 )
 async def search_wiki_cache_endpoint(

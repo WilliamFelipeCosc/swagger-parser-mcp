@@ -89,7 +89,7 @@ anything to serve at all.
 | `wiki-cache://tree{?wiki_id,stale_after_seconds}` | `wiki_id` (optional — all wikis if omitted), `stale_after_seconds` (optional override) | Full cached page hierarchy as a nested tree |
 | `wiki-cache://{wiki_id}/structure{?root_page_id,root_path,stale_after_seconds}` | `wiki_id`, one of `root_page_id`/`root_path`, `stale_after_seconds` | Folder/path subtree (no content) rooted at one page |
 | `wiki-cache://status{?wiki_id,stale_after_seconds}` | `wiki_id` (optional), `stale_after_seconds` | Page count, pages-with-content, last sync time per wiki |
-| `wiki-cache://search{?q,wiki_id,limit,stale_after_seconds}` | `q` (required, FTS5 syntax), `wiki_id` (optional), `limit` (default 20), `stale_after_seconds` | Full-text search over cached path+content |
+| `wiki-cache://search{?q,wiki_id,limit,stale_after_seconds}` | `q` (required, FTS5 syntax, accent-insensitive), `wiki_id` (optional), `limit` (default 20), `stale_after_seconds` | Full-text search over cached path+content. Each result includes full `content`, `breadcrumb` (ancestor chain), and `matched_in` (`path`/`content`) — see [Wiki Cache Internals](wiki-cache.md#search-result-shape) |
 
 ## Tools
 

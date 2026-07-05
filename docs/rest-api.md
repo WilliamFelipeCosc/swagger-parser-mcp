@@ -23,7 +23,7 @@ All under `/azure/`.
 | `GET /azure/wiki/page` | `get_azure_devops_wiki_page_by_path` | Fetch a wiki page's content by `path` |
 | `GET /azure/wiki/page/{page_id}` | `get_azure_devops_wiki_page_by_id` | Fetch a wiki page's content by `page_id` |
 | `POST /azure/wiki/cache/sync` | `sync_azure_devops_wiki_cache` | Rebuild the local cache for one wiki (structure + content) |
-| `GET /azure/wiki/cache/search` | `search_azure_devops_wiki_cache` | Full-text search over the cached wiki (FTS5) |
+| `GET /azure/wiki/cache/search` | `search_azure_devops_wiki_cache` | Full-text search over the cached wiki (FTS5); each result includes full content, breadcrumb, and matched_in |
 | `GET /azure/wiki/cache/tree` | `get_azure_devops_wiki_cache_tree` | Get the cached page hierarchy as a nested tree (no API calls) |
 | `GET /azure/wiki/cache/structure` | `get_azure_devops_wiki_cache_structure` | Get the cached folder/path subtree rooted at one page (no content, no API calls) |
 | `GET /azure/wiki/cache/status` | `get_azure_devops_wiki_cache_status` | Get cache stats (page count, last sync) per wiki |
@@ -91,7 +91,10 @@ the automatic one on server startup — before it has anything to serve.
   background, every time the server starts — this endpoint is for a wiki's first-ever
   sync (if you don't want to wait for the next restart) or an explicit forced reset.
 - `GET /azure/wiki/cache/search?q=...` — `q` supports FTS5 syntax (phrases in quotes,
-  `AND`/`OR`/`NOT`, `prefix*`); optional `wiki_id`, `limit` (default 20), `stale_after_seconds`.
+  `AND`/`OR`/`NOT`, `prefix*`) and is accent-insensitive; optional `wiki_id`, `limit`
+  (default 20), `stale_after_seconds`. Each result includes the page's full `content`, a
+  `breadcrumb` (ancestor page chain), and `matched_in` (`["path"]`/`["content"]`/both) —
+  see [Wiki Cache Internals](wiki-cache.md#search-result-shape).
 - `GET /azure/wiki/cache/tree` — optional `wiki_id` (omit for trees across all cached
   wikis), `stale_after_seconds`.
 - `GET /azure/wiki/cache/structure` — requires `wiki_id`, and exactly one of

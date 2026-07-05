@@ -78,9 +78,12 @@ def wiki_cache_status(wiki_id: Optional[str] = None, stale_after_seconds: Option
     name="WikiCacheSearch",
     description=(
         "Full-text search over the cached wiki pages (path + content) using SQLite FTS5. "
-        "`q` (required) supports FTS5 syntax (phrases in quotes, AND/OR/NOT, prefix*). "
-        "Refreshes the cache first if it's older than stale_after_seconds (see "
-        "WikiCacheTree). Omit wiki_id to search across all cached wikis."
+        "`q` (required) supports FTS5 syntax (phrases in quotes, AND/OR/NOT, prefix*) and "
+        "is accent-insensitive by default (e.g. 'adesao' also matches 'adesão'). Each "
+        "result includes the page's full content, its breadcrumb (ancestor page chain "
+        "from the wiki root), and matched_in ('path' and/or 'content', showing where the "
+        "query hit). Refreshes the cache first if it's older than stale_after_seconds "
+        "(see WikiCacheTree). Omit wiki_id to search across all cached wikis."
     ),
     mime_type="application/json",
 )

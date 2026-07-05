@@ -153,7 +153,7 @@ CREATE TABLE wiki_cache_check_state (
 | Function | Behavior |
 |---|---|
 | `replace_wiki_pages(wiki_id, pages)` | Deletes all existing rows for `wiki_id` (structure, content, FTS), then re-inserts `pages` (sorted shallowest-first) across all three tables in one pass. `pages` items may include `git_item_path`/`content_modified_at` |
-| `search_wiki_cache(query, wiki_id=None, limit=20)` | FTS5 `MATCH` query against `wiki_pages_fts`, joined back to `wiki_structure`; ranked by `bm25()`, with a `snippet()` excerpt |
+| `search_wiki_cache(query, wiki_id=None, limit=20)` | FTS5 `MATCH` query against `wiki_pages_fts` (accent-insensitive by default), joined back to `wiki_structure`/`wiki_page_content`; ranked by `bm25()`. Each result includes a `snippet()` excerpt, the full `content`, a `breadcrumb` (ancestor chain, via a `parent_id`-walking recursive CTE), and `matched_in` (`["path"]`/`["content"]`/both — computed via FTS5's `{column}: (query)` column-filter syntax) |
 | `get_wiki_tree(wiki_id=None)` | Rebuilds the full hierarchy from `wiki_structure.parent_id`, purely in-memory (no recursive SQL) |
 | `get_wiki_subtree(wiki_id, root_page_id=None, root_path=None)` | Same tree-building, but scoped via a `WITH RECURSIVE` CTE walking `parent_id` from one root row. Exactly one of `root_page_id`/`root_path` must be given |
 | `get_wiki_cache_status(wiki_id=None)` | `GROUP BY wiki_id` aggregate: page count, pages with content, last sync timestamp |
@@ -164,3 +164,26 @@ CREATE TABLE wiki_cache_check_state (
 All of these are **read-only, zero Azure API calls** — they reflect the state as of the
 last check/sync, not necessarily this instant (though in practice at most
 `stale_after_seconds` old).
+
+### Search result shape
+
+```json
+{
+  "wiki_id": "B2C.wiki",
+  "page_id": 375,
+  "path": "/Wiki Nivello/.../Bonificação na Adesão",
+  "breadcrumb": [
+    {"page_id": 250, "path": "/Wiki Nivello", "name": "Wiki Nivello"},
+    {"page_id": 589, "path": "/Wiki Nivello/Produto & Agilidade", "name": "Produto & Agilidade"}
+  ],
+  "matched_in": ["path", "content"],
+  "snippet": "A [Adesão] feita mediante pagamento bonificará a Rede até o...",
+  "content": "<full page markdown>"
+}
+```
+
+`matched_in` is computed by re-running the same query restricted to one FTS5 column at a
+time (`{path}: (query)` / `{content}: (query)`) against just the already-matched rowids —
+two small extra queries per search call, not per result row. The query is always
+parenthesized when scoped this way: `{path}: a OR b` would (incorrectly) only scope `a`
+to the `path` column and leave `b` unscoped, so it's wrapped as `{path}: (a OR b)`.

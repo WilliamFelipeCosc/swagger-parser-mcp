@@ -87,7 +87,7 @@ Independent FastAPI app; same endpoints as before, calling the same `internal/` 
 | `GET /azure/wiki/page` | `get_azure_devops_wiki_page_by_path` | Fetch a wiki page's content by `path` |
 | `GET /azure/wiki/page/{page_id}` | `get_azure_devops_wiki_page_by_id` | Fetch a wiki page's content by `page_id` |
 | `POST /azure/wiki/cache/sync` | `sync_azure_devops_wiki_cache` | Rebuild the local cache for one wiki (structure + content) |
-| `GET /azure/wiki/cache/search` | `search_azure_devops_wiki_cache` | Full-text search over the cached wiki (FTS5) |
+| `GET /azure/wiki/cache/search` | `search_azure_devops_wiki_cache` | Full-text search over the cached wiki (FTS5); results include full content, breadcrumb, matched_in |
 | `GET /azure/wiki/cache/tree` | `get_azure_devops_wiki_cache_tree` | Get the cached page hierarchy as a nested tree (no API calls) |
 | `GET /azure/wiki/cache/structure` | `get_azure_devops_wiki_cache_structure` | Get the cached folder/path subtree rooted at one page (no content, no API calls) |
 | `GET /azure/wiki/cache/status` | `get_azure_devops_wiki_cache_status` | Get cache stats (page count, last sync) per wiki |
@@ -126,7 +126,7 @@ Independent FastAPI app; same endpoints as before, calling the same `internal/` 
   - `wiki_page_content` — one row per `wiki_structure.id` (`structure_id` FK/PK), `content` (nullable if never synced), `content_synced_at` (when we last fetched it), `content_modified_at` (the actual git commit date behind that content — what staleness checks compare against).
   - `wiki_pages_fts` — a standalone FTS5 table over `(path, content)` (not an external-content table, since path/content live in two different source tables), inserted with an explicit `rowid` matching `wiki_structure.id` so search results can join back to it.
   - `wiki_cache_check_state` — `wiki_id` (PK), `last_checked_at`: when `check_and_refresh_wiki_cache` last ran for that wiki, gating the staleness check above.
-- `search_azure_devops_wiki_cache` takes an FTS5 `MATCH` query (phrases in quotes, `AND`/`OR`/`NOT`, `prefix*`) and returns ranked results with snippets.
+- `search_azure_devops_wiki_cache` takes an FTS5 `MATCH` query (phrases in quotes, `AND`/`OR`/`NOT`, `prefix*`; accent-insensitive by default, e.g. `adesao` also matches `adesão`) and returns ranked results, each with a `snippet`, the page's full `content`, a `breadcrumb` (ancestor chain from the wiki root, via a `parent_id`-walking CTE), and `matched_in` (`["path"]`/`["content"]`/both, via FTS5's `{column}: (query)` filter syntax — always parenthesized, since `{path}: a OR b` would otherwise leave `b` unscoped).
 - `get_azure_devops_wiki_cache_tree` rebuilds the full hierarchy from `wiki_structure.parent_id` with zero API calls — reflects the state as of the last check/sync.
 - `get_azure_devops_wiki_cache_structure` / `get_wiki_subtree` returns just the subtree rooted at one page (structure only, no content) via a `WITH RECURSIVE` CTE walking `parent_id` — e.g. `root_page_id=589` for `/Wiki Nivello/Produto & Agilidade` returns that page plus all 197 descendants nested as `sub_pages`. Pass exactly one of `root_page_id`/`root_path`.
 - `get_azure_devops_wiki_cache_status` reports page count / pages-with-content / last sync time per wiki.
