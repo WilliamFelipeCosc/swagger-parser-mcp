@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from typing import Optional
 from services.params import swagger_version
 from internal.main import get_enums, get_modules, get_paths
@@ -11,6 +11,7 @@ from internal.azure_devops import (
     sync_wiki_cache,
     search_wiki_cache,
     get_wiki_tree,
+    get_wiki_subtree,
     get_wiki_cache_status,
 )
 
@@ -150,6 +151,30 @@ async def get_wiki_cache_tree_endpoint(
     wiki_id: Optional[str] = Query(default=None, description="Restrict to a specific wiki. If omitted, returns trees for all cached wikis."),
 ):
     return get_wiki_tree(wiki_id=wiki_id)
+
+
+@app.get(
+    "/azure/wiki/cache/structure",
+    operation_id="get_azure_devops_wiki_cache_structure",
+    description=(
+        "Get the cached folder/path structure (no content) of the subtree rooted at a specific "
+        "page — e.g. root_page_id=589 for '/Wiki Nivello/Produto & Agilidade' returns that page "
+        "plus every descendant path underneath it, nested as sub_pages. No Azure DevOps API calls; "
+        "reflects the last sync. Requires a prior sync via sync_azure_devops_wiki_cache. Pass "
+        "exactly one of root_page_id or root_path."
+    ),
+)
+async def get_wiki_cache_structure_endpoint(
+    wiki_id: str = Query(description="ID or name of the wiki"),
+    root_page_id: Optional[int] = Query(default=None, description="Page ID to root the subtree at"),
+    root_path: Optional[str] = Query(default=None, description="Page path to root the subtree at (used if root_page_id is omitted)"),
+):
+    if root_page_id is None and root_path is None:
+        raise HTTPException(status_code=400, detail="root_page_id or root_path is required")
+    subtree = get_wiki_subtree(wiki_id=wiki_id, root_page_id=root_page_id, root_path=root_path)
+    if subtree is None:
+        raise HTTPException(status_code=404, detail="Page not found in cache. Has this wiki been synced?")
+    return subtree
 
 
 @app.get(
