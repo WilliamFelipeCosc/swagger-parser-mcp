@@ -1,4 +1,4 @@
-from services.mcp import combined_app
+from services.app import combined_app
 
 if __name__ == "__main__":
     import uvicorn

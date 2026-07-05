@@ -12,16 +12,16 @@ pip install -r requirements.txt
 python main.py
 
 # Run with uvicorn directly
-uvicorn services.mcp:combined_app --host localhost --port 9876 --reload
+uvicorn services.app:combined_app --host localhost --port 9876 --reload
 ```
 
 There are no tests or lint commands configured.
 
 ## Architecture
 
-This project exposes a Swagger/OpenAPI parser as both a REST API and an MCP (Model Context Protocol) server on the same port.
+This project exposes Swagger/OpenAPI parsing and Azure DevOps integration through two independent surfaces on the same port: a pure MCP (Model Context Protocol) server (Tools/Resources/Prompts) and a hand-written REST API. Neither is derived from the other.
 
-**Entry point:** `main.py` → runs `services.mcp:combined_app` on `localhost:9876`
+**Entry point:** `main.py` → runs `services.app:combined_app` on `localhost:9876`
 
 **Layer breakdown:**
 
@@ -30,8 +30,6 @@ This project exposes a Swagger/OpenAPI parser as both a REST API and an MCP (Mod
   - `client.py` — `get_swagger_json_url` (reads the version's URL from env vars), `load_json` (fetches + resolves `$ref`s via `jsonref`)
   - `parser.py` — `show_enums`, `show_paths`, `get_module_names` (pure functions over already-resolved Swagger JSON)
   - `__init__.py` composes the two into the three public functions: `get_enums`, `get_paths`, `get_modules`
-- `services/main.py` — FastAPI app wrapping the Swagger and Azure DevOps internal functions as REST endpoints (`/{version}/enums`, `/{version}/modules`, `/{version}/paths/{module_name}`, plus `/azure/*`)
-- `services/mcp.py` — uses `FastMCP.from_fastapi()` to auto-generate an MCP server from the FastAPI app, then merges both into a single `combined_app` (FastAPI with both route sets and the MCP lifespan)
 - `internal/azure_devops/` — Azure DevOps integration using the `azure-devops` Python SDK, split by concern:
   - `shared.py` — `_get_connection`/`_get_project`, used by both submodules below
   - `tasks.py` — Tasks/PBIs (board) integration; exposes `get_tasks` (accepts an optional `parent_id` filter), `get_pbis`
@@ -42,6 +40,9 @@ This project exposes a Swagger/OpenAPI parser as both a REST API and an MCP (Mod
   - `connection.py` — `_get_db_connection` (path from `WIKI_CACHE_DB_PATH` env var, default `data/wiki_cache.db`), schema creation
   - `wiki_repository.py` — `replace_wiki_pages` (bulk replace for one wiki, sorts shallowest-first internally to resolve `parent_id`), `search_wiki_cache`, `get_wiki_tree`, `get_wiki_subtree`, `get_wiki_cache_status`
   - `__init__.py` re-exports all five functions, so callers do `from internal.db import ...`
+- `services/mcp/` — the pure FastMCP server (see below), built with `fastmcp.FastMCP` directly (no `FastMCP.from_fastapi()`)
+- `services/rest/app.py` — independent, hand-written FastAPI app with the REST endpoints (`/{version}/enums`, `/{version}/modules`, `/{version}/paths/{module_name}`, plus `/azure/*`); not introspected for MCP generation
+- `services/app.py` — composes `services.mcp.mcp_app` (at `/mcp`) and `services.rest.app`'s routes (at their existing paths, e.g. `/azure/tasks`) into the single `combined_app` served by `main.py`
 
 **Environment variables** (`.env`):
 - `SWAGGER_JSON_V1_URL` — URL to v1 Swagger JSON
@@ -49,14 +50,33 @@ This project exposes a Swagger/OpenAPI parser as both a REST API and an MCP (Mod
 - `AZURE_DEVOPS_ORG_URL` — Azure DevOps organization URL (e.g. `https://dev.azure.com/YOURORG`)
 - `AZURE_DEVOPS_PAT` — Personal Access Token for authentication
 - `AZURE_DEVOPS_PROJECT` — Project name or ID
+- `WIKI_CACHE_DB_PATH` — override for the wiki cache SQLite file (default `data/wiki_cache.db`)
 
 **Module name extraction** (`get_module_names`): paths are parsed as `/{prefix}/{version}/{module}/...`; if the third segment is `admin`, the module name becomes `admin/{fourth_segment}`.
 
 **MCP transport:** served over HTTP at `/mcp` (streamable HTTP, not stdio).
 
-## Azure DevOps Endpoints
+## MCP Server (`services/mcp/`)
 
-All endpoints are under `/azure/` and auto-exposed as MCP tools.
+`services/mcp/server.py` creates a single `FastMCP(name="swagger_parser")` instance, then imports `resources`, `tools`, and `prompts` submodules for their registration side effects (each decorates the shared `mcp` instance with `@mcp.tool`/`@mcp.resource`/`@mcp.prompt` at import time). `mcp_app = mcp.http_app(path="/mcp")` is what `services/app.py` mounts.
+
+**Resources** (`services/mcp/resources/`) — read-only, no side effects, addressed by URI. Query-string template params (`{?param}`) must have defaults in the function signature (a FastMCP requirement); "required" ones default to `None` and raise `ValueError` if omitted. Resource functions must return `str`/`bytes`, so all of these `json.dumps()` their result (declared `mime_type="application/json"`):
+- `swagger.py` — `swagger://{version}/enums`, `swagger://{version}/modules`, `swagger://{version}/paths/{module_name}`
+- `wiki_live.py` — `wiki://pages{?top}` (all wikis), `wiki://{wiki_id}/pages{?top,continuation_token}`, `wiki://page-by-path{?path}` / `wiki://{wiki_id}/page-by-path{?path}`, `wiki://page-by-id/{page_id}` / `wiki://{wiki_id}/page-by-id/{page_id}` — the no-`wiki_id` variants default to the project's default wiki
+- `wiki_cache.py` — `wiki-cache://tree{?wiki_id}`, `wiki-cache://{wiki_id}/structure{?root_page_id,root_path}`, `wiki-cache://status{?wiki_id}`, `wiki-cache://search{?q,wiki_id,limit}`
+
+**Tools** (`services/mcp/tools/`) — actions and queries with many dynamic filters:
+- `azure_work_items.py` — `get_azure_devops_tasks` (filters: `id`, `parent_id`, `assignee`, `team`, `current_sprint`, `sprint`, `state`, `top`), `get_azure_devops_pbis` (same minus `parent_id`)
+- `wiki_cache_sync.py` — `sync_azure_devops_wiki_cache(wiki_id, fetch_content=True)`, the only mutating operation (rewrites the SQLite cache)
+
+**Prompts** (`services/mcp/prompts/`):
+- `sprint_status_report(team?, sprint?, current_sprint=True)` — builds a report prompt from `get_tasks`/`get_pbis`, grouped by assignee/state
+- `wiki_page_digest(path? | page_id, wiki_id?)` — builds a summarization prompt from a wiki page and all its subpages' content
+- `pbi_breakdown_check(pbi_id)` — builds a prompt checking a PBI's child Tasks (via `get_tasks(parent_id=pbi_id)`) for completeness/state consistency
+
+## REST API (`services/rest/app.py`)
+
+Independent FastAPI app; same endpoints as before, calling the same `internal/` functions the MCP layer uses. Not exposed as MCP tools (that auto-derivation was removed — see MCP Server section above for the native equivalents).
 
 | Endpoint | Operation ID | Description |
 |---|---|---|
@@ -73,6 +93,7 @@ All endpoints are under `/azure/` and auto-exposed as MCP tools.
 
 **Shared query params for `/azure/tasks` and `/azure/pbis`:**
 - `id` — fetch a single item by work item ID
+- `parent_id` — filter by parent PBI's work item ID (`/azure/tasks` only)
 - `assignee` — substring match on display name
 - `team` — sprint board team name (scopes `@CurrentIteration` to the right team)
 - `current_sprint` — boolean; filters by `@CurrentIteration` (takes priority over `sprint`)

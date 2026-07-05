@@ -17,7 +17,10 @@ from internal.db import (
     get_wiki_cache_status,
 )
 
-app = FastAPI()
+app = FastAPI(
+    title="Swagger REST API",
+    description="REST API for the Swagger MCP project (Swagger parsing + Azure DevOps). Independent of the MCP server at /mcp.",
+)
 
 @app.get("/{version}/enums", operation_id="get_enums", description="Get all enums defined in the Swagger JSON for the specified version.")
 async def get_enums_endpoint(version: swagger_version):
@@ -38,10 +41,11 @@ async def get_modules_endpoint(version: swagger_version):
 @app.get(
     "/azure/tasks",
     operation_id="get_azure_devops_tasks",
-    description="Get Azure DevOps Tasks. Filter by id (exact), assignee (substring), team/sprint board, current sprint (@CurrentIteration), sprint name (substring), or state.",
+    description="Get Azure DevOps Tasks. Filter by id (exact), parent_id (exact), assignee (substring), team/sprint board, current sprint (@CurrentIteration), sprint name (substring), or state.",
 )
 async def get_tasks_endpoint(
     id: Optional[int] = Query(default=None, description="Fetch a single task by its work item ID"),
+    parent_id: Optional[int] = Query(default=None, description="Filter by parent PBI's work item ID"),
     assignee: Optional[str] = Query(default=None, description="Filter by assignee display name (substring match)"),
     team: Optional[str] = Query(default=None, description="Sprint board team name (scopes @CurrentIteration and board context)"),
     current_sprint: bool = Query(default=False, description="Return only items in the team's current sprint (@CurrentIteration)"),
@@ -49,7 +53,7 @@ async def get_tasks_endpoint(
     state: Optional[str] = Query(default=None, description="Filter by work item state, e.g. 'Active', 'New', 'Closed'"),
     top: int = Query(default=100, description="Maximum number of items to return"),
 ):
-    return get_tasks(item_id=id, sprint=sprint, current_sprint=current_sprint, team=team, assignee=assignee, state=state, top=top)
+    return get_tasks(item_id=id, parent_id=parent_id, sprint=sprint, current_sprint=current_sprint, team=team, assignee=assignee, state=state, top=top)
 
 
 @app.get(
