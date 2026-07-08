@@ -30,6 +30,7 @@ def _extract_work_item_fields(item) -> dict:
 def _get_work_items_by_type(
     work_item_type: str,
     item_id: Optional[int] = None,
+    parent_id: Optional[int] = None,
     sprint: Optional[str] = None,
     current_sprint: bool = False,
     team: Optional[str] = None,
@@ -49,6 +50,8 @@ def _get_work_items_by_type(
         f"[System.TeamProject] = '{project}'",
         f"[System.WorkItemType] = '{work_item_type}'",
     ]
+    if parent_id is not None:
+        conditions.append(f"[System.Parent] = {parent_id}")
     if current_sprint:
         conditions.append("[System.IterationPath] = @CurrentIteration")
     elif sprint:
@@ -80,6 +83,7 @@ def _get_work_items_by_type(
 
 def get_tasks(
     item_id: Optional[int] = None,
+    parent_id: Optional[int] = None,
     sprint: Optional[str] = None,
     current_sprint: bool = False,
     team: Optional[str] = None,
@@ -90,6 +94,7 @@ def get_tasks(
     return _get_work_items_by_type(
         "Task",
         item_id=item_id,
+        parent_id=parent_id,
         sprint=sprint,
         current_sprint=current_sprint,
         team=team,
