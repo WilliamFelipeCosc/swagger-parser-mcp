@@ -35,6 +35,16 @@ def show_paths(resolved_data, module_name):
 
     return paths_info
 
+def show_single_path(resolved_data, module_name, path):
+    paths_info = show_paths(resolved_data, module_name)
+
+    normalized_path = path if path.startswith('/') else f'/{path}'
+    for full_path, operations in paths_info.items():
+        if full_path.endswith(normalized_path):
+            return {full_path: operations}
+
+    raise ValueError(f"Path '{path}' not found for module '{module_name}'")
+
 def show_enums(resolved_data):
     components = resolved_data.get('components', {})
     schemas = components.get('schemas', {})

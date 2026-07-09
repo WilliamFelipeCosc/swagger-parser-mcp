@@ -20,4 +20,4 @@ def get_swagger_json_url(version: swagger_version):
 
 def load_json(url: str):
     response = requests.get(url)
-    return jsonref.loads(response.text, base_uri=url)
+    return jsonref.loads(response.text, base_uri=url, proxies=False)
