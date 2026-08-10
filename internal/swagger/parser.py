@@ -65,8 +65,8 @@ def get_module_names(resolved_data):
 
     for path in paths.keys():
         parts = path.strip('/').split('/')
-        if len(parts) > 1:
-            if parts[2] == 'admin':
+        if len(parts) > 2:
+            if parts[2] == 'admin' and len(parts) > 3:
                 module_names.add(f"{parts[2]}/{parts[3]}")
             else:
                 module_names.add(parts[2])

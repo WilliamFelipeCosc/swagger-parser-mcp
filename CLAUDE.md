@@ -8,20 +8,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Install dependencies
 pip install -r requirements.txt
 
-# Run the server (HTTP + MCP combined on localhost:9876)
+# Run the MCP server over stdio (default — for MCP client configs, e.g. Claude Code's .mcp.json)
 python main.py
 
-# Run with uvicorn directly
+# Run REST + MCP-over-HTTP combined on localhost:9876 instead
+python main.py --http
+
+# Run with uvicorn directly (HTTP mode only)
 uvicorn services.app:combined_app --host localhost --port 9876 --reload
 ```
 
 There are no tests or lint commands configured.
 
+## Connecting to this MCP server
+
+**stdio is the primary and recommended connection method.** Configure MCP clients (e.g. Claude Code's `.mcp.json`) to launch the server as a subprocess over stdio rather than connecting to an HTTP endpoint:
+
+```json
+{
+  "mcpServers": {
+    "swagger_parser": {
+      "command": "python",
+      "args": ["main.py"],
+      "cwd": "/path/to/swagger-parser-mcp"
+    }
+  }
+}
+```
+
+This runs `mcp.run(transport="stdio")` directly (see Entry point below) — no server process to keep running, no port to manage, and it's the standard transport MCP clients expect. Only use `--http` (streamable HTTP at `/mcp`) as a fallback when a client can't spawn subprocesses or you need the REST API on the same port; treat it as secondary to stdio, not an alternative default.
+
 ## Architecture
 
 This project exposes Swagger/OpenAPI parsing and Azure DevOps integration through two independent surfaces on the same port: a pure MCP (Model Context Protocol) server (Tools/Resources/Prompts) and a hand-written REST API. Neither is derived from the other.
 
-**Entry point:** `main.py` → runs `services.app:combined_app` on `localhost:9876`
+**Entry point:** `main.py` → by default runs the MCP server (`services.mcp.server:mcp`) over stdio; `--http` instead runs `services.app:combined_app` on `localhost:9876`
 
 **Layer breakdown:**
 
@@ -42,7 +63,7 @@ This project exposes Swagger/OpenAPI parsing and Azure DevOps integration throug
   - `__init__.py` re-exports all nine functions, so callers do `from internal.db import ...`
 - `services/mcp/` — the pure FastMCP server (see below), built with `fastmcp.FastMCP` directly (no `FastMCP.from_fastapi()`)
 - `services/rest/app.py` — independent, hand-written FastAPI app with the REST endpoints (`/{version}/enums`, `/{version}/modules`, `/{version}/paths/{module_name}`, plus `/azure/*`); not introspected for MCP generation
-- `services/app.py` — composes `services.mcp.mcp_app` (at `/mcp`) and `services.rest.app`'s routes (at their existing paths, e.g. `/azure/tasks`) into the single `combined_app` served by `main.py`; its lifespan also kicks off `internal.azure_devops.sync_all_wikis_on_startup()` as a non-blocking background task on every server start
+- `services/app.py` — composes `services.mcp.mcp_app` (at `/mcp`) and `services.rest.app`'s routes (at their existing paths, e.g. `/azure/tasks`) into the single `combined_app`, used only when `main.py` is run with `--http`; its lifespan also kicks off `internal.azure_devops.sync_all_wikis_on_startup()` as a non-blocking background task on every server start. In the default stdio mode, `main.py` calls `mcp.run(transport="stdio")` directly (bypassing `combined_app`/ASGI entirely) and fires `sync_all_wikis_on_startup()` in a plain background daemon thread beforehand, since there's no ASGI lifespan to hook into
 
 **Environment variables** (`.env`):
 - `SWAGGER_JSON_V1_URL` — URL to v1 Swagger JSON
@@ -55,11 +76,11 @@ This project exposes Swagger/OpenAPI parsing and Azure DevOps integration throug
 
 **Module name extraction** (`get_module_names`): paths are parsed as `/{prefix}/{version}/{module}/...`; if the third segment is `admin`, the module name becomes `admin/{fourth_segment}`.
 
-**MCP transport:** served over HTTP at `/mcp` (streamable HTTP, not stdio).
+**MCP transport:** stdio is the primary, recommended transport (`python main.py`, via `mcp.run(transport="stdio")` — the standard transport for MCP client configs, see Connecting to this MCP server above); streamable HTTP at `/mcp` is a secondary fallback via `python main.py --http`, for clients that can't spawn subprocesses or when the REST API is also needed.
 
 ## MCP Server (`services/mcp/`)
 
-`services/mcp/server.py` creates a single `FastMCP(name="swagger_parser")` instance, then imports `resources`, `tools`, and `prompts` submodules for their registration side effects (each decorates the shared `mcp` instance with `@mcp.tool`/`@mcp.resource`/`@mcp.prompt` at import time). `mcp_app = mcp.http_app(path="/mcp")` is what `services/app.py` mounts.
+`services/mcp/server.py` creates a single `FastMCP(name="swagger_parser")` instance, then imports `resources`, `tools`, and `prompts` submodules for their registration side effects (each decorates the shared `mcp` instance with `@mcp.tool`/`@mcp.resource`/`@mcp.prompt` at import time). `mcp_app = mcp.http_app(path="/mcp")` is what `services/app.py` mounts for `--http` mode; the default stdio mode calls `mcp.run(transport="stdio")` directly from `main.py` instead.
 
 **Resources** (`services/mcp/resources/`) — read-only, no side effects, addressed by URI. Query-string template params (`{?param}`) must have defaults in the function signature (a FastMCP requirement); "required" ones default to `None` and raise `ValueError` if omitted. Resource functions must return `str`/`bytes`, so all of these `json.dumps()` their result (declared `mime_type="application/json"`):
 - `swagger.py` — `swagger://{version}/enums`, `swagger://{version}/enums/{enum_name}`, `swagger://{version}/modules`, `swagger://{version}/paths/{module_name}`, `swagger://{version}/paths/{module_name}/{path*}` (single endpoint path; `path*` is a wildcard path param so it can capture embedded slashes, e.g. `{id}` placeholders — matched by suffix against the full Swagger path)

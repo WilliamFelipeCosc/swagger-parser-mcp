@@ -65,6 +65,25 @@ WIKI_CACHE_STALE_SECONDS=86400          # default shown (1 day)
 
 ```bash
 python main.py
+```
+
+This runs the MCP server over **stdio** — the primary and recommended way to run this
+project. There's no port to manage and no separate process to keep alive; your MCP
+client launches `python main.py` as a subprocess and talks to it directly over
+stdin/stdout.
+
+If Azure DevOps is configured, every wiki in the project is synced into a local
+SQLite+FTS5 cache in the background on startup (non-blocking) — see
+[Wiki Cache Internals](docs/wiki-cache.md).
+
+There are no automated tests or lint commands configured for this project.
+
+### HTTP mode (fallback)
+
+Only needed if your MCP client can't spawn subprocesses, or you also want the REST API:
+
+```bash
+python main.py --http
 
 # or directly with uvicorn
 uvicorn services.app:combined_app --host localhost --port 9876 --reload
@@ -74,15 +93,36 @@ The server starts on `http://localhost:9876`. The MCP endpoint is at
 `http://localhost:9876/mcp`; interactive REST docs are at
 `http://localhost:9876/docs`.
 
-If Azure DevOps is configured, every wiki in the project is synced into a local
-SQLite+FTS5 cache in the background on startup (non-blocking) — see
-[Wiki Cache Internals](docs/wiki-cache.md).
-
-There are no automated tests or lint commands configured for this project.
-
 ## Connecting to Claude
 
-Add this server to your Claude Desktop or Claude Code MCP configuration:
+**stdio is the primary connection method.** Add this server to your Claude Desktop or
+Claude Code MCP configuration to have it launch `python main.py` as a subprocess:
+
+```json
+{
+  "mcpServers": {
+    "swagger-parser": {
+      "command": "python",
+      "args": ["main.py"],
+      "cwd": "/path/to/swagger-parser-mcp"
+    }
+  }
+}
+```
+
+For Claude Code, add it via the CLI:
+
+```bash
+claude mcp add swagger-parser -- python /path/to/swagger-parser-mcp/main.py
+```
+
+Make sure the virtual environment created above is the one on `PATH` (or invoked with
+its full path, e.g. `/path/to/swagger-parser-mcp/.venv/bin/python`) so dependencies
+resolve correctly.
+
+### HTTP mode (fallback)
+
+Only if you're running the server with `--http` (see above):
 
 ```json
 {
@@ -93,8 +133,6 @@ Add this server to your Claude Desktop or Claude Code MCP configuration:
   }
 }
 ```
-
-For Claude Code, add it via the CLI:
 
 ```bash
 claude mcp add --transport http swagger-parser http://localhost:9876/mcp
