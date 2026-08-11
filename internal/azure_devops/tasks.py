@@ -3,6 +3,22 @@ from azure.devops.v7_1.work_item_tracking.models import Wiql, TeamContext
 from .shared import _get_connection, _get_project
 
 
+def _extract_comment_fields(comment) -> dict:
+    created_by_raw = comment.created_by
+    created_by = created_by_raw.display_name if created_by_raw else None
+    return {
+        "id": comment.id,
+        "text": comment.text,
+        "created_by": created_by,
+        "created_date": str(comment.created_date) if comment.created_date else None,
+    }
+
+
+def _get_work_item_comments(client, project: str, work_item_id: int) -> list:
+    comment_list = client.get_comments(project, work_item_id)
+    return [_extract_comment_fields(c) for c in (comment_list.comments or [])]
+
+
 def _extract_work_item_fields(item) -> dict:
     fields = item.fields
     assigned_to_raw = fields.get("System.AssignedTo")
@@ -44,7 +60,11 @@ def _get_work_items_by_type(
 
     if item_id is not None:
         item = client.get_work_item(item_id)
-        return [_extract_work_item_fields(item)] if item else []
+        if not item:
+            return []
+        fields = _extract_work_item_fields(item)
+        fields["comments"] = _get_work_item_comments(client, project, item_id)
+        return [fields]
 
     conditions = [
         f"[System.TeamProject] = '{project}'",

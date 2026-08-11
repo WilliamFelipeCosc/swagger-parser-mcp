@@ -42,7 +42,12 @@ async def get_modules_endpoint(version: swagger_version):
 @app.get(
     "/azure/tasks",
     operation_id="get_azure_devops_tasks",
-    description="Get Azure DevOps Tasks. Filter by id (exact), parent_id (exact), assignee (substring), team/sprint board, current sprint (@CurrentIteration), sprint name (substring), or state.",
+    description=(
+        "Get Azure DevOps Tasks. Filter by id (exact), parent_id (exact), assignee (substring), "
+        "team/sprint board, current sprint (@CurrentIteration), sprint name (substring), or state. "
+        "When id is set, the result also includes a comments list (id, text, created_by, "
+        "created_date) — omitted for multi-result queries to avoid one extra API call per item."
+    ),
 )
 async def get_tasks_endpoint(
     id: Optional[int] = Query(default=None, description="Fetch a single task by its work item ID"),
@@ -60,7 +65,13 @@ async def get_tasks_endpoint(
 @app.get(
     "/azure/pbis",
     operation_id="get_azure_devops_pbis",
-    description="Get Azure DevOps Product Backlog Items (PBIs). Filter by id (exact), assignee (substring), team/sprint board, current sprint (@CurrentIteration), sprint name (substring), or state.",
+    description=(
+        "Get Azure DevOps Product Backlog Items (PBIs). Filter by id (exact), assignee "
+        "(substring), team/sprint board, current sprint (@CurrentIteration), sprint name "
+        "(substring), or state. When id is set, the result also includes a comments list "
+        "(id, text, created_by, created_date) — omitted for multi-result queries to avoid "
+        "one extra API call per item."
+    ),
 )
 async def get_pbis_endpoint(
     id: Optional[int] = Query(default=None, description="Fetch a single PBI by its work item ID"),

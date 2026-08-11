@@ -10,7 +10,9 @@ from ..server import mcp
     description=(
         "Get Azure DevOps Tasks. Filter by id (exact), parent_id (exact, the parent PBI's "
         "work item ID), assignee (substring), team/sprint board, current sprint "
-        "(@CurrentIteration), sprint name (substring), or state."
+        "(@CurrentIteration), sprint name (substring), or state. When id is set, the result "
+        "also includes a comments list (id, text, created_by, created_date) — omitted for "
+        "multi-result queries to avoid one extra API call per item."
     ),
 )
 def get_azure_devops_tasks(
@@ -40,7 +42,9 @@ def get_azure_devops_tasks(
     description=(
         "Get Azure DevOps Product Backlog Items (PBIs). Filter by id (exact), assignee "
         "(substring), team/sprint board, current sprint (@CurrentIteration), sprint name "
-        "(substring), or state."
+        "(substring), or state. When id is set, the result also includes a comments list "
+        "(id, text, created_by, created_date) — omitted for multi-result queries to avoid "
+        "one extra API call per item."
     ),
 )
 def get_azure_devops_pbis(

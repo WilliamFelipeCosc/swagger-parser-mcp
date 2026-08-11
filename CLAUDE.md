@@ -88,7 +88,7 @@ This project exposes Swagger/OpenAPI parsing and Azure DevOps integration throug
 - `wiki_cache.py` — `wiki-cache://tree{?wiki_id,stale_after_seconds}`, `wiki-cache://{wiki_id}/structure{?root_page_id,root_path,stale_after_seconds}`, `wiki-cache://status{?wiki_id,stale_after_seconds}`, `wiki-cache://search{?q,wiki_id,limit,stale_after_seconds}` — each calls `ensure_wiki_cache_fresh` before reading (see Wiki Cache Internals)
 
 **Tools** (`services/mcp/tools/`) — actions and queries with many dynamic filters:
-- `azure_work_items.py` — `get_azure_devops_tasks` (filters: `id`, `parent_id`, `assignee`, `team`, `current_sprint`, `sprint`, `state`, `top`), `get_azure_devops_pbis` (same minus `parent_id`).
+- `azure_work_items.py` — `get_azure_devops_tasks` (filters: `id`, `parent_id`, `assignee`, `team`, `current_sprint`, `sprint`, `state`, `top`), `get_azure_devops_pbis` (same minus `parent_id`). When `id` is set, the returned item includes a `comments` list (see Task/PBI comments below).
 - `wiki_cache_sync.py` — `sync_azure_devops_wiki_cache(wiki_id, fetch_content=True)`, the only mutating operation (rewrites the SQLite cache)
 
 **Prompts** (`services/mcp/prompts/`):
@@ -124,6 +124,8 @@ Independent FastAPI app; same endpoints as before, calling the same `internal/` 
 - `top` — max results (default 100)
 
 **Task response fields include `parent_id`** (`System.Parent`) — the ID of the parent PBI, or `null` if unset.
+
+**Task/PBI comments**: when `id` is passed to `get_tasks`/`get_pbis` (REST `/azure/tasks`/`/azure/pbis`, MCP `get_azure_devops_tasks`/`get_azure_devops_pbis`), the single returned item includes a `comments` list (`internal/azure_devops/tasks.py`'s `_get_work_item_comments`, via the SDK's `WorkItemTrackingClient.get_comments`), each entry with `id`, `text`, `created_by` (display name), `created_date`. Comments are fetched only for single-item lookups by `id` — omitted (no `comments` key) on filtered/list queries, since the Azure DevOps API has no batch endpoint for comments across multiple work items and fetching them for every row of a `top`-sized list would mean one extra API call per item.
 
 **Wiki endpoints:**
 - `/azure/wiki` accepts an optional `wiki_id` (ID or name); if omitted, all wikis in the project are listed.
