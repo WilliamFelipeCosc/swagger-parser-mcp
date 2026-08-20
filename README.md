@@ -8,43 +8,57 @@ hand-written REST API. Neither surface is derived from the other.
 ## Prerequisites
 
 - Python 3.10+
+- [`uv`](https://docs.astral.sh/uv/) for the recommended zero-clone install (`curl -LsSf https://astral.sh/uv/install.sh | sh`, or `winget install astral-sh.uv` on Windows)
 - Access to one or two Swagger/OpenAPI JSON URLs (v1 and/or v2)
 - (Optional) An Azure DevOps organization with a Personal Access Token, for the Azure
   DevOps / wiki features
 
 ## Installation
 
-### Windows
+### Recommended: no clone, no venv
 
-```powershell
-git clone git@github.com:WilliamFelipeCosc/swagger-parser-mcp.git
-cd swagger-parser-mcp
+The server is a proper Python package with a `swagger-parser-mcp` console script, so
+`uvx` can fetch, build and run it straight from git. Nothing to clone, no virtualenv to
+activate, no interpreter to keep on `PATH` — see
+[Connecting to Claude](#connecting-to-claude) for the `mcpServers` block.
 
-python -m venv .venv
-.venv\Scripts\activate
-
-pip install -r requirements.txt
+```bash
+# one-off smoke test
+uvx --from git+https://github.com/WilliamFelipeCosc/swagger-parser-mcp swagger-parser-mcp --help
 ```
 
-### macOS / Linux
+To keep a persistent installed copy instead:
+
+```bash
+uv tool install git+https://github.com/WilliamFelipeCosc/swagger-parser-mcp
+# or, without uv:
+pipx install git+https://github.com/WilliamFelipeCosc/swagger-parser-mcp
+```
+
+### Development install
 
 ```bash
 git clone git@github.com:WilliamFelipeCosc/swagger-parser-mcp.git
 cd swagger-parser-mcp
 
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv .venv          # Windows: python -m venv .venv
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
 
-pip install -r requirements.txt
+pip install -e ".[http]"       # or: pip install -r requirements.txt
 ```
 
-> The virtual environment must be active whenever you run the server. To reactivate it
-> in a new terminal session, run `.venv\Scripts\activate` (Windows) or
-> `source .venv/bin/activate` (macOS/Linux).
+`requirements.txt` is just `-e .[http]`; the real dependency list lives in
+`pyproject.toml`. The `http` extra adds FastAPI and uvicorn, which only the `--http`
+mode needs — the default stdio path never imports FastAPI, so a bare
+`pip install -e .` is enough if you only want the MCP server.
 
 ## Configuration
 
-Create a `.env` file in the project root:
+Copy the committed template and fill it in:
+
+```bash
+cp .env.example .env
+```
 
 ```env
 # Required: at least one Swagger URL
@@ -57,20 +71,42 @@ AZURE_DEVOPS_PAT=your_personal_access_token
 AZURE_DEVOPS_PROJECT=YourProjectName
 
 # Optional: wiki cache tuning
-WIKI_CACHE_DB_PATH=data/wiki_cache.db   # default shown
 WIKI_CACHE_STALE_SECONDS=86400          # default shown (1 day)
+WIKI_CACHE_DB_PATH=/custom/path.db      # default: per-user data dir, see below
 ```
+
+**Where `.env` is looked for** (`internal/env.py`), in order, never overriding a variable
+that is already set:
+
+1. Walking up from the current working directory — covers an MCP client that sets `cwd`
+   to a checkout.
+2. The checkout root next to the installed package — covers an editable/dev install
+   launched from an unrelated directory.
+
+An installed copy (`uvx`, `uv tool install`, `pipx`) has no checkout, so **variables must
+come from the `env` map in your MCP client config** — see below. Anything in the process
+environment always wins over the file, so the client's `env` map overrides `.env`.
+
+**Wiki cache location.** `WIKI_CACHE_DB_PATH` overrides it. Otherwise an existing
+`<repo>/data/wiki_cache.db` is reused if present (so a dev checkout keeps its populated
+cache), and failing that the default is the per-user data directory:
+
+| OS | Default path |
+|---|---|
+| Linux | `~/.local/share/swagger-parser-mcp/wiki_cache.db` |
+| macOS | `~/Library/Application Support/swagger-parser-mcp/wiki_cache.db` |
+| Windows | `%LOCALAPPDATA%\swagger-parser-mcp\wiki_cache.db` |
 
 ## Running the Server
 
 ```bash
-python main.py
+swagger-parser-mcp        # installed console script
+python main.py            # equivalent, from a checkout
 ```
 
 This runs the MCP server over **stdio** — the primary and recommended way to run this
 project. There's no port to manage and no separate process to keep alive; your MCP
-client launches `python main.py` as a subprocess and talks to it directly over
-stdin/stdout.
+client launches the command as a subprocess and talks to it directly over stdin/stdout.
 
 If Azure DevOps is configured, every wiki in the project is synced into a local
 SQLite+FTS5 cache in the background on startup (non-blocking) — see
@@ -80,10 +116,11 @@ There are no automated tests or lint commands configured for this project.
 
 ### HTTP mode (fallback)
 
-Only needed if your MCP client can't spawn subprocesses, or you also want the REST API:
+Only needed if your MCP client can't spawn subprocesses, or you also want the REST API.
+Requires the `http` extra.
 
 ```bash
-python main.py --http
+swagger-parser-mcp --http
 
 # or directly with uvicorn
 uvicorn services.app:combined_app --host localhost --port 9876 --reload
@@ -93,18 +130,40 @@ The server starts on `http://localhost:9876`. The MCP endpoint is at
 `http://localhost:9876/mcp`; interactive REST docs are at
 `http://localhost:9876/docs`.
 
+### `fastmcp run` (dev)
+
+`fastmcp.json` declares the source, uv environment and stdio transport, so a checkout
+also runs with:
+
+```bash
+fastmcp run
+```
+
+Note this loads the `mcp` object directly and never calls `main()`, so it **skips the
+background startup wiki sync**. Cached reads still auto-refresh once stale, but a wiki
+that has never been synced needs one `sync_azure_devops_wiki_cache` call first.
+
 ## Connecting to Claude
 
-**stdio is the primary connection method.** Add this server to your Claude Desktop or
-Claude Code MCP configuration to have it launch `python main.py` as a subprocess:
+**stdio is the primary connection method.** Secrets travel via the `env` map, which the
+client puts into the server subprocess's environment before spawning it:
 
 ```json
 {
   "mcpServers": {
     "swagger-parser": {
-      "command": "python",
-      "args": ["main.py"],
-      "cwd": "/path/to/swagger-parser-mcp"
+      "command": "uvx",
+      "args": [
+        "--from", "git+https://github.com/WilliamFelipeCosc/swagger-parser-mcp",
+        "swagger-parser-mcp"
+      ],
+      "env": {
+        "SWAGGER_JSON_V1_URL": "https://your-api.example.com/swagger/v1/swagger.json",
+        "SWAGGER_JSON_V2_URL": "https://your-api.example.com/swagger/v2/swagger.json",
+        "AZURE_DEVOPS_ORG_URL": "https://dev.azure.com/YOUR_ORG",
+        "AZURE_DEVOPS_PAT": "your_personal_access_token",
+        "AZURE_DEVOPS_PROJECT": "YourProjectName"
+      }
     }
   }
 }
@@ -113,12 +172,29 @@ Claude Code MCP configuration to have it launch `python main.py` as a subprocess
 For Claude Code, add it via the CLI:
 
 ```bash
-claude mcp add swagger-parser -- python /path/to/swagger-parser-mcp/main.py
+claude mcp add swagger-parser \
+  --env SWAGGER_JSON_V1_URL=https://your-api.example.com/swagger/v1/swagger.json \
+  --env AZURE_DEVOPS_ORG_URL=https://dev.azure.com/YOUR_ORG \
+  --env AZURE_DEVOPS_PAT=your_personal_access_token \
+  --env AZURE_DEVOPS_PROJECT=YourProjectName \
+  -- uvx --from git+https://github.com/WilliamFelipeCosc/swagger-parser-mcp swagger-parser-mcp
 ```
 
-Make sure the virtual environment created above is the one on `PATH` (or invoked with
-its full path, e.g. `/path/to/swagger-parser-mcp/.venv/bin/python`) so dependencies
-resolve correctly.
+From a checkout, `swagger-parser-mcp` (or `python main.py` with `"cwd"` set) works as the
+`command` instead, and the vars can come from `.env` rather than the `env` map.
+
+### Generating the config with FastMCP
+
+From a checkout, `fastmcp install` writes the block above — including the `env` map —
+into a client's config for you, reading the values straight out of `.env`:
+
+```bash
+fastmcp install claude-code main.py --name "Swagger Parser" --env-file .env
+fastmcp install claude-desktop main.py --env-file .env
+fastmcp install mcp-json main.py --env-file .env     # prints JSON for any other client
+```
+
+Individual values can be passed with repeated `--env KEY=VALUE` flags instead.
 
 ### HTTP mode (fallback)
 

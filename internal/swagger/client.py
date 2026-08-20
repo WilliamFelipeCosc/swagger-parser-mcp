@@ -2,11 +2,11 @@ import os
 
 import jsonref
 import requests
-from dotenv import load_dotenv
 
+from internal.env import load_env
 from services.params import swagger_version
 
-load_dotenv()
+load_env()
 
 
 def get_swagger_json_url(version: swagger_version):

@@ -1,7 +1,7 @@
 # Wiki Cache Internals
 
-A local SQLite database (`data/wiki_cache.db` by default; override with
-`WIKI_CACHE_DB_PATH`) caching wiki structure and content for full-text search. It's
+A local SQLite database (in the per-user data dir by default — or an existing
+`<repo>/data/wiki_cache.db` if one is there; override with `WIKI_CACHE_DB_PATH`) caching wiki structure and content for full-text search. It's
 consumed both by MCP Resources (`wiki-cache://...`, see [MCP Reference](mcp-reference.md))
 and REST endpoints (`/azure/wiki/cache/*`, see [REST API Reference](rest-api.md)) — both
 call the exact same `internal/` functions.

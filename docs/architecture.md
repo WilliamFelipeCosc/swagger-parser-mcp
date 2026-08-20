@@ -2,15 +2,30 @@
 
 ## Entry point
 
-`main.py` imports `combined_app` from `services/app.py` and runs it with `uvicorn` on
-`localhost:9876`.
+`services/cli.py:main` — installed as the `swagger-parser-mcp` console script by
+`pyproject.toml`'s `[project.scripts]`. `main.py` is a dev shim that calls it, so
+`python main.py` from a checkout behaves identically.
+
+By default it runs the MCP server over **stdio**. `--http` instead serves REST +
+MCP-over-HTTP on `localhost:9876`.
 
 ```
-main.py
-  └── services/app.py            → combined_app (FastAPI)
-        ├── services/mcp/        → mcp_app, mounted at /mcp
-        └── services/rest/app.py → REST routes, at their own paths (/azure/*, /{version}/*)
+services/cli.py:main
+  ├── (default)  services/mcp/server.py → mcp.run(transport="stdio")
+  │              + sync_all_wikis_on_startup() in a background daemon thread
+  └── (--http)   services/app.py            → combined_app (FastAPI)
+                   ├── services/mcp/        → mcp_app, mounted at /mcp
+                   └── services/rest/app.py → REST routes, at their own paths
+                                              (/azure/*, /{version}/*)
 ```
+
+`services/app.py` and `uvicorn` are imported **lazily inside the `--http` branch**, so the
+stdio path never pulls in FastAPI — which is why `fastapi`/`uvicorn` live in the optional
+`http` extra rather than the base dependencies.
+
+`main.py` also re-exports `mcp` at module level, so `fastmcp run main.py:mcp` and
+`fastmcp.json`'s `source.entrypoint` resolve. That path loads the `mcp` object directly
+and never calls `main()`, so it skips the background startup wiki sync.
 
 `services/app.py` builds `combined_app` by merging `mcp_app.routes` and `rest_app.routes`
 into one `FastAPI` instance (not `.mount()`-based nesting), so the REST paths are
@@ -76,7 +91,7 @@ every function takes already-fetched data and reads/writes SQLite only. See
 
 | File | Responsibility |
 |---|---|
-| `connection.py` | `_get_db_connection()` (path from `WIKI_CACHE_DB_PATH` env var, default `data/wiki_cache.db`), schema creation |
+| `connection.py` | `_get_db_connection()` (path from `_get_db_path()`: `WIKI_CACHE_DB_PATH` if set, else an existing `<repo>/data/wiki_cache.db`, else `platformdirs.user_data_dir("swagger-parser-mcp")/wiki_cache.db`), schema creation |
 | `wiki_repository.py` | `replace_wiki_pages`, `search_wiki_cache`, `get_wiki_tree`, `get_wiki_subtree`, `get_wiki_cache_status`, `get_cached_wiki_pages`, `get_all_cached_wiki_ids`, `get_wiki_cache_last_checked_at`, `record_wiki_cache_check` |
 | `__init__.py` | Re-exports all nine functions |
 
@@ -94,7 +109,7 @@ between the Swagger internal logic and both `services/` surfaces.
 | `AZURE_DEVOPS_ORG_URL` | Azure DevOps organization URL, e.g. `https://dev.azure.com/YOURORG` |
 | `AZURE_DEVOPS_PAT` | Personal Access Token for authentication |
 | `AZURE_DEVOPS_PROJECT` | Project name or ID |
-| `WIKI_CACHE_DB_PATH` | Override for the wiki cache SQLite file (default `data/wiki_cache.db`) |
+| `WIKI_CACHE_DB_PATH` | Override for the wiki cache SQLite file (default: existing `<repo>/data/wiki_cache.db` if present, else the per-user data dir via `platformdirs`) |
 | `WIKI_CACHE_STALE_SECONDS` | Default staleness threshold for automatic wiki cache refresh (default `86400`, 1 day); overridable per-call via `stale_after_seconds` |
 
 ## Why the code is shaped this way

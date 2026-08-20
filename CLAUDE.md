@@ -5,17 +5,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Development install (the `http` extra adds FastAPI + uvicorn, needed only for --http)
+pip install -e ".[http]"        # requirements.txt is just `-e .[http]`
 
 # Run the MCP server over stdio (default — for MCP client configs, e.g. Claude Code's .mcp.json)
-python main.py
+swagger-parser-mcp              # installed console script
+python main.py                  # equivalent, from a checkout
 
 # Run REST + MCP-over-HTTP combined on localhost:9876 instead
-python main.py --http
+swagger-parser-mcp --http
 
 # Run with uvicorn directly (HTTP mode only)
 uvicorn services.app:combined_app --host localhost --port 9876 --reload
+
+# Run from fastmcp.json (dev; skips the startup wiki sync — see Entry point below)
+fastmcp run
 ```
 
 There are no tests or lint commands configured.
@@ -28,9 +32,9 @@ There are no tests or lint commands configured.
 {
   "mcpServers": {
     "swagger_parser": {
-      "command": "python",
-      "args": ["main.py"],
-      "cwd": "/path/to/swagger-parser-mcp"
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/WilliamFelipeCosc/swagger-parser-mcp", "swagger-parser-mcp"],
+      "env": { "SWAGGER_JSON_V1_URL": "...", "AZURE_DEVOPS_ORG_URL": "...", "AZURE_DEVOPS_PAT": "...", "AZURE_DEVOPS_PROJECT": "..." }
     }
   }
 }
@@ -38,14 +42,22 @@ There are no tests or lint commands configured.
 
 This runs `mcp.run(transport="stdio")` directly (see Entry point below) — no server process to keep running, no port to manage, and it's the standard transport MCP clients expect. Only use `--http` (streamable HTTP at `/mcp`) as a fallback when a client can't spawn subprocesses or you need the REST API on the same port; treat it as secondary to stdio, not an alternative default.
 
+The project is a real package (`pyproject.toml`) with a `swagger-parser-mcp` console script, so `uvx` runs it straight from git with no clone, no venv and no `cwd` — this is the recommended form. From a checkout, `"command": "swagger-parser-mcp"` (or `"python"` + `"args": ["main.py"]` + `"cwd"`) works too, with config coming from `.env` instead of the `env` map. `fastmcp install claude-code main.py --env-file .env` (or `fastmcp install mcp-json ...`) generates either block from `.env`.
+
+**There is no MCP-protocol mechanism for passing environment variables.** The `env` map is a client-side launch detail — the client writes it into the subprocess environment before spawning. `internal/env.py`'s `load_env()` never overrides an already-set variable, so the `env` map always wins over `.env`.
+
 ## Architecture
 
 This project exposes Swagger/OpenAPI parsing and Azure DevOps integration through two independent surfaces on the same port: a pure MCP (Model Context Protocol) server (Tools/Resources/Prompts) and a hand-written REST API. Neither is derived from the other.
 
-**Entry point:** `main.py` → by default runs the MCP server (`services.mcp.server:mcp`) over stdio; `--http` instead runs `services.app:combined_app` on `localhost:9876`
+**Entry point:** `services/cli.py:main` (installed as the `swagger-parser-mcp` console script via `pyproject.toml`'s `[project.scripts]`) → by default runs the MCP server (`services.mcp.server:mcp`) over stdio; `--http` instead runs `services.app:combined_app` on `localhost:9876`, importing `services.app`/`uvicorn` **lazily inside that branch** so the stdio path never pulls in FastAPI. `main.py` is a dev shim that calls `services.cli:main` (keeping `python main.py` and any existing client config working) and re-exports `mcp` at module level so `fastmcp run main.py:mcp` / `fastmcp.json`'s `source.entrypoint` resolve. Note `fastmcp run` loads the `mcp` object directly and never calls `main()`, so it skips the background startup wiki sync.
 
 **Layer breakdown:**
 
+- `pyproject.toml` — the package definition: 7 direct runtime deps (fastmcp, requests, jsonref, python-dotenv, azure-devops, msrest, platformdirs), an `http` extra (fastapi, uvicorn), and the `swagger-parser-mcp` console script. `requirements.txt` is a one-line `-e .[http]` pointer, not a dependency list (it used to be a ~100-package `pip freeze` that included `uvloop`, which has no Windows wheels and broke installs there)
+- `fastmcp.json` — declarative FastMCP config (`source` = `main.py:mcp`, uv environment with `editable: ["."]`, stdio transport, `env_file: .env`) for `fastmcp run`
+- `internal/env.py` — `load_env()`: idempotent `.env` loading, anchored rather than CWD-dependent. Tries `find_dotenv(usecwd=True)` then `<checkout root>/.env` (`parents[1]` of this file), both with `override=False`. Replaces the bare `load_dotenv()` calls that used to sit in `internal/swagger/client.py` and `internal/azure_devops/shared.py`; an installed copy has no checkout, so it finds nothing and config must come from the client's `env` map
+- `services/cli.py` — `main()`, the console-script entry point (see Entry point above)
 - `services/params.py` — defines `swagger_version` enum (`v1`, `v2`), the only shared type
 - `internal/swagger/` — core Swagger logic, split by concern:
   - `client.py` — `get_swagger_json_url` (reads the version's URL from env vars), `load_json` (fetches + resolves `$ref`s via `jsonref`)
@@ -58,12 +70,12 @@ This project exposes Swagger/OpenAPI parsing and Azure DevOps integration throug
   - `wiki_sync.py` — orchestrates cache rebuilds and staleness checks: fetches pages/content from the Azure API (via `wiki.py`'s `_get_pages_batch_page`) and persists them via `internal.db.replace_wiki_pages`; exposes `sync_wiki_cache` (full/bootstrap resync), `check_and_refresh_wiki_cache` (TTL-gated incremental refresh), `ensure_wiki_cache_fresh` (best-effort wrapper called before cache reads), and `sync_all_wikis_on_startup`. This is the only module that talks to both the Azure API and the SQLite cache — `wiki.py` never touches SQLite and `internal/db/` never calls Azure. See [Wiki Cache Internals](docs/wiki-cache.md) for the full incremental-sync algorithm.
   - `__init__.py` re-exports `get_tasks`, `get_pbis`, `get_wiki_pages`, `get_wiki_page_by_path`, `get_wiki_page_by_id`, `sync_wiki_cache`, `check_and_refresh_wiki_cache`, `ensure_wiki_cache_fresh`, `sync_all_wikis_on_startup`
 - `internal/db/` — generic SQLite+FTS5 persistence layer for the wiki cache, with zero Azure API knowledge:
-  - `connection.py` — `_get_db_connection` (path from `WIKI_CACHE_DB_PATH` env var, default `data/wiki_cache.db`), schema creation (idempotent migrations for `git_item_path`/`content_modified_at` columns added after the initial release)
+  - `connection.py` — `_get_db_connection` (path from `_get_db_path()`: `WIKI_CACHE_DB_PATH` if set, else the legacy `<repo>/data/wiki_cache.db` **only if that file already exists**, else `platformdirs.user_data_dir("swagger-parser-mcp")/wiki_cache.db`; the legacy branch keeps an existing dev checkout on its populated cache, while installed copies get a writable per-user path instead of one inside `site-packages`), schema creation (idempotent migrations for `git_item_path`/`content_modified_at` columns added after the initial release)
   - `wiki_repository.py` — `replace_wiki_pages` (bulk replace for one wiki, sorts shallowest-first internally to resolve `parent_id`), `search_wiki_cache`, `get_wiki_tree`, `get_wiki_subtree`, `get_wiki_cache_status`, `get_cached_wiki_pages`, `get_all_cached_wiki_ids`, `get_wiki_cache_last_checked_at`, `record_wiki_cache_check`
   - `__init__.py` re-exports all nine functions, so callers do `from internal.db import ...`
 - `services/mcp/` — the pure FastMCP server (see below), built with `fastmcp.FastMCP` directly (no `FastMCP.from_fastapi()`)
 - `services/rest/app.py` — independent, hand-written FastAPI app with the REST endpoints (`/{version}/enums`, `/{version}/modules`, `/{version}/paths/{module_name}`, plus `/azure/*`); not introspected for MCP generation
-- `services/app.py` — composes `services.mcp.mcp_app` (at `/mcp`) and `services.rest.app`'s routes (at their existing paths, e.g. `/azure/tasks`) into the single `combined_app`, used only when `main.py` is run with `--http`; its lifespan also kicks off `internal.azure_devops.sync_all_wikis_on_startup()` as a non-blocking background task on every server start. In the default stdio mode, `main.py` calls `mcp.run(transport="stdio")` directly (bypassing `combined_app`/ASGI entirely) and fires `sync_all_wikis_on_startup()` in a plain background daemon thread beforehand, since there's no ASGI lifespan to hook into
+- `services/app.py` — composes `services.mcp.mcp_app` (at `/mcp`) and `services.rest.app`'s routes (at their existing paths, e.g. `/azure/tasks`) into the single `combined_app`, used only when the entry point is run with `--http`; its lifespan also kicks off `internal.azure_devops.sync_all_wikis_on_startup()` as a non-blocking background task on every server start. In the default stdio mode, `services/cli.py` calls `mcp.run(transport="stdio")` directly (bypassing `combined_app`/ASGI entirely) and fires `sync_all_wikis_on_startup()` in a plain background daemon thread beforehand, since there's no ASGI lifespan to hook into
 
 **Environment variables** (`.env`):
 - `SWAGGER_JSON_V1_URL` — URL to v1 Swagger JSON
@@ -71,16 +83,16 @@ This project exposes Swagger/OpenAPI parsing and Azure DevOps integration throug
 - `AZURE_DEVOPS_ORG_URL` — Azure DevOps organization URL (e.g. `https://dev.azure.com/YOURORG`)
 - `AZURE_DEVOPS_PAT` — Personal Access Token for authentication
 - `AZURE_DEVOPS_PROJECT` — Project name or ID
-- `WIKI_CACHE_DB_PATH` — override for the wiki cache SQLite file (default `data/wiki_cache.db`)
+- `WIKI_CACHE_DB_PATH` — override for the wiki cache SQLite file (default: existing `<repo>/data/wiki_cache.db` if present, else `platformdirs.user_data_dir("swagger-parser-mcp")/wiki_cache.db`)
 - `WIKI_CACHE_STALE_SECONDS` — default staleness threshold for automatic wiki cache refresh (default `86400`, 1 day); overridable per-call via `stale_after_seconds`
 
 **Module name extraction** (`get_module_names`): paths are parsed as `/{prefix}/{version}/{module}/...`; if the third segment is `admin`, the module name becomes `admin/{fourth_segment}`.
 
-**MCP transport:** stdio is the primary, recommended transport (`python main.py`, via `mcp.run(transport="stdio")` — the standard transport for MCP client configs, see Connecting to this MCP server above); streamable HTTP at `/mcp` is a secondary fallback via `python main.py --http`, for clients that can't spawn subprocesses or when the REST API is also needed.
+**MCP transport:** stdio is the primary, recommended transport (`swagger-parser-mcp`, via `mcp.run(transport="stdio")` — the standard transport for MCP client configs, see Connecting to this MCP server above); streamable HTTP at `/mcp` is a secondary fallback via `swagger-parser-mcp --http`, for clients that can't spawn subprocesses or when the REST API is also needed.
 
 ## MCP Server (`services/mcp/`)
 
-`services/mcp/server.py` creates a single `FastMCP(name="swagger_parser")` instance, then imports `resources`, `tools`, and `prompts` submodules for their registration side effects (each decorates the shared `mcp` instance with `@mcp.tool`/`@mcp.resource`/`@mcp.prompt` at import time). `mcp_app = mcp.http_app(path="/mcp")` is what `services/app.py` mounts for `--http` mode; the default stdio mode calls `mcp.run(transport="stdio")` directly from `main.py` instead.
+`services/mcp/server.py` creates a single `FastMCP(name="swagger_parser")` instance, then imports `resources`, `tools`, and `prompts` submodules for their registration side effects (each decorates the shared `mcp` instance with `@mcp.tool`/`@mcp.resource`/`@mcp.prompt` at import time). `mcp_app = mcp.http_app(path="/mcp")` is what `services/app.py` mounts for `--http` mode; the default stdio mode calls `mcp.run(transport="stdio")` directly from `services/cli.py` instead.
 
 **Resources** (`services/mcp/resources/`) — read-only, no side effects, addressed by URI. Query-string template params (`{?param}`) must have defaults in the function signature (a FastMCP requirement); "required" ones default to `None` and raise `ValueError` if omitted. Resource functions must return `str`/`bytes`, so all of these `json.dumps()` their result (declared `mime_type="application/json"`):
 - `swagger.py` — `swagger://{version}/enums`, `swagger://{version}/enums/{enum_name}`, `swagger://{version}/modules`, `swagger://{version}/paths/{module_name}`, `swagger://{version}/paths/{module_name}/{path*}` (single endpoint path; `path*` is a wildcard path param so it can capture embedded slashes, e.g. `{id}` placeholders — matched by suffix against the full Swagger path)
@@ -136,7 +148,7 @@ Independent FastAPI app; same endpoints as before, calling the same `internal/` 
 
 **Wiki pagination** (`/azure/wiki`): response shape is `{"pages": [...], "continuation_token": ...}`. Pass `top` and `continuation_token` (from a previous response) to page through a single wiki's pages — this only works when `wiki_id` is set, since Azure DevOps continuation tokens are per-wiki. When `wiki_id` is omitted (listing all wikis), `continuation_token` is always `null` and each wiki returns up to `top` pages with no further pagination.
 
-**Wiki cache** (`internal/azure_devops/wiki_sync.py` orchestrating `internal/db/`): a local SQLite database (`data/wiki_cache.db` by default; override with `WIKI_CACHE_DB_PATH`) caching wiki structure and content for full-text search, entirely separate from the live `/azure/wiki*` endpoints above (those still always hit the API — the cache is purely additive). Full details and the incremental-sync algorithm: [docs/wiki-cache.md](docs/wiki-cache.md).
+**Wiki cache** (`internal/azure_devops/wiki_sync.py` orchestrating `internal/db/`): a local SQLite database (per-user data dir by default, or an existing `<repo>/data/wiki_cache.db`; override with `WIKI_CACHE_DB_PATH`) caching wiki structure and content for full-text search, entirely separate from the live `/azure/wiki*` endpoints above (those still always hit the API — the cache is purely additive). Full details and the incremental-sync algorithm: [docs/wiki-cache.md](docs/wiki-cache.md).
 
 - `sync_azure_devops_wiki_cache` (`wiki_id` required, `fetch_content` default `true`) — full/bootstrap resync, fully replacing that wiki's cached rows. Only needed for a wiki's first-ever sync or to force a full reset: every wiki in the project is also resynced automatically (in the background, non-blocking) on every server startup (`sync_all_wikis_on_startup`, wired into `services/app.py`'s lifespan), and reads auto-refresh incrementally once stale (see below). The cache starts empty; nothing else here works until a sync — manual or startup — has completed for a wiki at least once.
 - **Automatic staleness refresh**: every wiki-cache read (REST `/azure/wiki/cache/*` GETs, MCP `wiki-cache://*` resources) calls `ensure_wiki_cache_fresh(wiki_id, stale_after_seconds)` first. If the wiki was checked more recently than `stale_after_seconds` (default `WIKI_CACHE_STALE_SECONDS`, 1 day), this is a no-op (zero Azure calls). Otherwise it calls `check_and_refresh_wiki_cache`, which:

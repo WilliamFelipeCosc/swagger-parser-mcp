@@ -1,9 +1,10 @@
 import os
-from dotenv import load_dotenv
 from msrest.authentication import BasicAuthentication
 from azure.devops.connection import Connection
 
-load_dotenv()
+from internal.env import load_env
+
+load_env()
 
 
 def _get_connection() -> Connection:

@@ -2,12 +2,26 @@ import os
 import sqlite3
 from pathlib import Path
 
+from platformdirs import user_data_dir
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DB_PATH = str(_REPO_ROOT / "data" / "wiki_cache.db")
+
+# Where the cache lived before this project became pip-installable. For an
+# installed copy _REPO_ROOT is inside site-packages (often read-only), so this
+# is only honoured when the file is actually already there — that keeps an
+# existing dev checkout on its populated cache instead of silently resyncing
+# every wiki into a new location.
+LEGACY_DB_PATH = str(_REPO_ROOT / "data" / "wiki_cache.db")
+DEFAULT_DB_PATH = str(Path(user_data_dir("swagger-parser-mcp")) / "wiki_cache.db")
 
 
 def _get_db_path() -> str:
-    return os.getenv("WIKI_CACHE_DB_PATH", DEFAULT_DB_PATH)
+    override = os.getenv("WIKI_CACHE_DB_PATH")
+    if override:
+        return override
+    if Path(LEGACY_DB_PATH).is_file():
+        return LEGACY_DB_PATH
+    return DEFAULT_DB_PATH
 
 
 def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, coltype: str) -> None:

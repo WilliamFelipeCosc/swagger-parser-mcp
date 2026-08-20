@@ -14,15 +14,21 @@ server and a hand-written REST API. Neither surface is derived from the other.
 ## Quickstart
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Development install (`http` extra = FastAPI + uvicorn, needed only for --http)
+pip install -e ".[http]"
 
-# Run the server (REST + MCP combined on localhost:9876)
-python main.py
+# Run the MCP server over stdio (default)
+swagger-parser-mcp          # or, from a checkout: python main.py
 
-# Run with uvicorn directly
+# Run REST + MCP combined on localhost:9876 instead
+swagger-parser-mcp --http
+
+# Run with uvicorn directly (HTTP mode only)
 uvicorn services.app:combined_app --host localhost --port 9876 --reload
 ```
+
+For installing on another machine without a clone, see the `uvx` recipe in the
+[top-level README](../README.md#installation).
 
 There are no automated tests or lint commands configured for this project.
 
@@ -33,5 +39,6 @@ There are no automated tests or lint commands configured for this project.
 | MCP server (Tools/Resources/Prompts) | `/mcp` | `fastmcp.FastMCP`, defined natively in `services/mcp/` |
 | REST API | `/{version}/*`, `/azure/*` | FastAPI, defined by hand in `services/rest/app.py` |
 
-Both are mounted into a single `combined_app` (`services/app.py`), which `main.py` runs on
-`localhost:9876`.
+Both are mounted into a single `combined_app` (`services/app.py`), which the entry point
+runs on `localhost:9876` — but only in `--http` mode. The default is MCP over stdio, with
+no HTTP surface at all.

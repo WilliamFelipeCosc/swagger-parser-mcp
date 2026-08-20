@@ -1,2 +1,41 @@
-[tool.fastapi]
-entrypoint = "services.main:app"
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "swagger-parser-mcp"
+version = "0.3.0"
+description = "MCP server exposing Swagger/OpenAPI parsing and Azure DevOps (Tasks/PBIs, wiki, cached full-text search)"
+requires-python = ">=3.10"
+readme = "README.md"
+
+# Exactly the packages imported directly by internal/ and services/mcp/.
+# Lower bounds only — no upper pins and no transitive deps, so this installs
+# cleanly on any platform (the old pip-freeze requirements.txt pulled in
+# uvloop, which has no Windows wheels).
+dependencies = [
+    "fastmcp>=3.4",
+    "requests>=2.31",
+    "jsonref>=1.1",
+    "python-dotenv>=1.0",
+    "azure-devops>=7.1.0b4",
+    "msrest>=0.7",
+    "platformdirs>=4.0",
+]
+
+[project.optional-dependencies]
+# Only services/app.py and services/rest/app.py need these, and only the
+# `--http` branch of services/cli.py imports them.
+http = [
+    "fastapi>=0.110",
+    "uvicorn>=0.30",
+]
+
+[project.scripts]
+swagger-parser-mcp = "services.cli:main"
+
+[tool.hatch.build.targets.wheel]
+# main.py is deliberately not shipped: a top-level `main` module in
+# site-packages is a name-collision hazard. It stays in the repo as a dev
+# shim (see main.py).
+packages = ["internal", "services"]
