@@ -1,7 +1,8 @@
 # MCP Reference
 
 The MCP server is built with `fastmcp.FastMCP`, defined in `services/mcp/`, and served
-over streamable HTTP at `/mcp` (not stdio).
+over **stdio** — the only transport. MCP clients launch it as a subprocess (see
+[the top-level README](../README.md#connecting-to-claude)).
 
 ## How it's wired
 
@@ -13,8 +14,8 @@ mcp = FastMCP(name="swagger_parser", instructions="...")
 
 then imports the `resources`, `tools`, and `prompts` sub-packages purely for their import
 side effects — each module in those packages decorates the shared `mcp` instance with
-`@mcp.resource`, `@mcp.tool`, or `@mcp.prompt` at import time. `mcp_app = mcp.http_app(path="/mcp")`
-is the ASGI app that `services/app.py` mounts.
+`@mcp.resource`, `@mcp.tool`, or `@mcp.prompt` at import time. `services/cli.py:main` then
+calls `mcp.run(transport="stdio")` on that instance.
 
 ```
 services/mcp/

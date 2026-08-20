@@ -14,5 +14,3 @@ mcp = FastMCP(
 from . import resources  # noqa: E402,F401
 from . import tools  # noqa: E402,F401
 from . import prompts  # noqa: E402,F401
-
-mcp_app = mcp.http_app(path="/mcp")

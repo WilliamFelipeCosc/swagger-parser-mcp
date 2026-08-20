@@ -1,7 +1,7 @@
 # Direct dependencies are declared in pyproject.toml — this file just installs
-# the project itself (with the optional REST/HTTP extra) in editable mode.
+# the project itself in editable mode.
 #
 # The previous contents were a `pip freeze` dump of ~100 transitive pins, which
 # included uvloop (no Windows wheels, so the install failed there), Linux-only
 # jeepney/SecretStorage, and both fastmcp and fastmcp-slim.
--e .[http]
+-e .

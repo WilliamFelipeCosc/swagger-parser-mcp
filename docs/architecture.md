@@ -6,57 +6,40 @@
 `pyproject.toml`'s `[project.scripts]`. `main.py` is a dev shim that calls it, so
 `python main.py` from a checkout behaves identically.
 
-By default it runs the MCP server over **stdio**. `--http` instead serves REST +
-MCP-over-HTTP on `localhost:9876`.
+It runs the MCP server over **stdio** — the only transport. There is no HTTP surface, no
+port and no ASGI app.
 
 ```
 services/cli.py:main
-  ├── (default)  services/mcp/server.py → mcp.run(transport="stdio")
-  │              + sync_all_wikis_on_startup() in a background daemon thread
-  └── (--http)   services/app.py            → combined_app (FastAPI)
-                   ├── services/mcp/        → mcp_app, mounted at /mcp
-                   └── services/rest/app.py → REST routes, at their own paths
-                                              (/azure/*, /{version}/*)
+  ├── load_env()                        → .env, anchored (see internal/env.py)
+  ├── sync_all_wikis_on_startup()       → background daemon thread, non-blocking
+  └── services/mcp/server.py            → mcp.run(transport="stdio")
 ```
 
-`services/app.py` and `uvicorn` are imported **lazily inside the `--http` branch**, so the
-stdio path never pulls in FastAPI — which is why `fastapi`/`uvicorn` live in the optional
-`http` extra rather than the base dependencies.
+Because there is no ASGI lifespan to hook into, the startup resync runs in a plain daemon
+thread: the server starts serving immediately and every wiki in the configured project
+gets a full resync shortly after. See [Wiki Cache Internals](wiki-cache.md).
 
 `main.py` also re-exports `mcp` at module level, so `fastmcp run main.py:mcp` and
 `fastmcp.json`'s `source.entrypoint` resolve. That path loads the `mcp` object directly
 and never calls `main()`, so it skips the background startup wiki sync.
 
-`services/app.py` builds `combined_app` by merging `mcp_app.routes` and `rest_app.routes`
-into one `FastAPI` instance (not `.mount()`-based nesting), so the REST paths are
-unchanged from before this surface split, and the MCP endpoint stays at `/mcp`.
+## Design principle: one surface, native MCP
 
-Its lifespan wraps `mcp_app.lifespan` and schedules
-`internal.azure_devops.sync_all_wikis_on_startup()` as a background `asyncio` task (via
-`asyncio.to_thread`, since the Azure SDK calls are synchronous) — the server starts
-accepting requests immediately, and every wiki in the configured project gets a full
-resync shortly after. See [Wiki Cache Internals](wiki-cache.md).
+`services/mcp/` is a plain `fastmcp.FastMCP` instance with Tools, Resources and Prompts
+registered natively via decorators — **not** built with `FastMCP.from_fastapi()`. It calls
+`internal/` functions directly.
 
-## Design principle: two independent surfaces
-
-The MCP server and the REST API each call the same `internal/` functions directly, but
-neither is generated from the other:
-
-- The REST API (`services/rest/app.py`) is a plain FastAPI app, maintained by hand.
-- The MCP server (`services/mcp/`) is a plain `fastmcp.FastMCP` instance, with Tools,
-  Resources, and Prompts registered natively via decorators — **not** built with
-  `FastMCP.from_fastapi()`.
-
-This means the two surfaces can diverge in shape where it makes sense (e.g. the MCP
-server exposes read-only Azure DevOps/Swagger data as addressable Resources, while the
-REST API exposes everything as query-parameterized `GET` endpoints) without one
-constraining the other's design.
+The project previously served a second, hand-written FastAPI/REST surface alongside MCP on
+one port. That was removed: every REST endpoint already had an MCP equivalent, so the
+FastAPI app, its uvicorn/`--http` entry point and the `fastapi`/`uvicorn` dependencies were
+all dead weight for a server that MCP clients launch over stdio.
 
 ## `internal/` layer breakdown
 
-`internal/` contains all business logic; `services/` only adapts that logic to REST or
-MCP. Each `internal/` sub-package owns one concern and has a narrow, explicit boundary
-with its neighbors.
+`internal/` contains all business logic; `services/` only adapts that logic to MCP. Each
+`internal/` sub-package owns one concern and has a narrow, explicit boundary with its
+neighbors.
 
 ### `internal/swagger/` — Swagger/OpenAPI parsing
 
@@ -98,7 +81,7 @@ every function takes already-fetched data and reads/writes SQLite only. See
 ### `services/params.py`
 
 Defines `swagger_version` — a `str` `Enum` with values `v1`/`v2` — the only type shared
-between the Swagger internal logic and both `services/` surfaces.
+between the Swagger internal logic and the `services/` layer.
 
 ## Environment variables (`.env`)
 
@@ -119,7 +102,7 @@ between the Swagger internal logic and both `services/` surfaces.
   Azure and calls into `internal/db/` to persist. This keeps the persistence layer
   reusable/testable without live Azure credentials, and keeps Azure API concerns out of
   SQL code.
-- **`services/mcp/` and `services/rest/` never share route/tool definitions** — each
-  calls `internal/` directly. This was a deliberate choice over auto-generating one from
-  the other, so each surface's shape (Resources vs. query-parameterized endpoints) can
-  fit its protocol idiomatically.
+- **`services/mcp/` registers its Tools/Resources/Prompts by hand and calls `internal/`
+  directly** — deliberately, rather than auto-deriving them from an OpenAPI spec via
+  `FastMCP.from_fastapi()`. That keeps each Resource URI and Tool signature shaped for
+  the protocol instead of inheriting the shape of an HTTP endpoint.

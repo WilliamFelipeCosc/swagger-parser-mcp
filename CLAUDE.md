@@ -5,18 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-# Development install (the `http` extra adds FastAPI + uvicorn, needed only for --http)
-pip install -e ".[http]"        # requirements.txt is just `-e .[http]`
+# Development install
+pip install -e .                # requirements.txt is just `-e .`
 
-# Run the MCP server over stdio (default — for MCP client configs, e.g. Claude Code's .mcp.json)
+# Run the MCP server over stdio — the only transport
 swagger-parser-mcp              # installed console script
 python main.py                  # equivalent, from a checkout
-
-# Run REST + MCP-over-HTTP combined on localhost:9876 instead
-swagger-parser-mcp --http
-
-# Run with uvicorn directly (HTTP mode only)
-uvicorn services.app:combined_app --host localhost --port 9876 --reload
 
 # Run from fastmcp.json (dev; skips the startup wiki sync — see Entry point below)
 fastmcp run
@@ -40,7 +34,7 @@ There are no tests or lint commands configured.
 }
 ```
 
-This runs `mcp.run(transport="stdio")` directly (see Entry point below) — no server process to keep running, no port to manage, and it's the standard transport MCP clients expect. Only use `--http` (streamable HTTP at `/mcp`) as a fallback when a client can't spawn subprocesses or you need the REST API on the same port; treat it as secondary to stdio, not an alternative default.
+This runs `mcp.run(transport="stdio")` directly (see Entry point below) — no server process to keep running, no port to manage, and it's the standard transport MCP clients expect. **stdio is the only transport**: there is no HTTP mode and no REST API (see Design history below).
 
 The project is a real package (`pyproject.toml`) with a `swagger-parser-mcp` console script, so `uvx` runs it straight from git with no clone, no venv and no `cwd` — this is the recommended form. From a checkout, `"command": "swagger-parser-mcp"` (or `"python"` + `"args": ["main.py"]` + `"cwd"`) works too, with config coming from `.env` instead of the `env` map. `fastmcp install claude-code main.py --env-file .env` (or `fastmcp install mcp-json ...`) generates either block from `.env`.
 
@@ -48,13 +42,15 @@ The project is a real package (`pyproject.toml`) with a `swagger-parser-mcp` con
 
 ## Architecture
 
-This project exposes Swagger/OpenAPI parsing and Azure DevOps integration through two independent surfaces on the same port: a pure MCP (Model Context Protocol) server (Tools/Resources/Prompts) and a hand-written REST API. Neither is derived from the other.
+This project exposes Swagger/OpenAPI parsing and Azure DevOps integration as a single surface: a pure MCP (Model Context Protocol) server — Tools, Resources and Prompts — spoken over stdio.
 
-**Entry point:** `services/cli.py:main` (installed as the `swagger-parser-mcp` console script via `pyproject.toml`'s `[project.scripts]`) → by default runs the MCP server (`services.mcp.server:mcp`) over stdio; `--http` instead runs `services.app:combined_app` on `localhost:9876`, importing `services.app`/`uvicorn` **lazily inside that branch** so the stdio path never pulls in FastAPI. `main.py` is a dev shim that calls `services.cli:main` (keeping `python main.py` and any existing client config working) and re-exports `mcp` at module level so `fastmcp run main.py:mcp` / `fastmcp.json`'s `source.entrypoint` resolve. Note `fastmcp run` loads the `mcp` object directly and never calls `main()`, so it skips the background startup wiki sync.
+**Design history:** a second, hand-written FastAPI/REST surface (`services/rest/app.py`) used to be served alongside MCP on one port via `services/app.py`'s `combined_app` and a `--http` flag. It was removed: every REST endpoint already had an MCP equivalent, so the FastAPI app, the `--http` entry point, `mcp.http_app()` and the `fastapi`/`uvicorn` dependencies were all dead weight for a server that clients launch over stdio. Recover it from git history if ever needed; don't reintroduce it casually.
+
+**Entry point:** `services/cli.py:main` (installed as the `swagger-parser-mcp` console script via `pyproject.toml`'s `[project.scripts]`) → loads `.env` via `internal.env.load_env()`, starts `sync_all_wikis_on_startup()` in a background daemon thread, then runs the MCP server (`services.mcp.server:mcp`) with `mcp.run(transport="stdio")`. There are no other modes and no flags. `main.py` is a dev shim that calls `services.cli:main` (keeping `python main.py` and any existing client config working) and re-exports `mcp` at module level so `fastmcp run main.py:mcp` / `fastmcp.json`'s `source.entrypoint` resolve. Note `fastmcp run` loads the `mcp` object directly and never calls `main()`, so it skips the background startup wiki sync.
 
 **Layer breakdown:**
 
-- `pyproject.toml` — the package definition: 7 direct runtime deps (fastmcp, requests, jsonref, python-dotenv, azure-devops, msrest, platformdirs), an `http` extra (fastapi, uvicorn), and the `swagger-parser-mcp` console script. `requirements.txt` is a one-line `-e .[http]` pointer, not a dependency list (it used to be a ~100-package `pip freeze` that included `uvloop`, which has no Windows wheels and broke installs there)
+- `pyproject.toml` — the package definition: 7 direct runtime deps (fastmcp, requests, jsonref, python-dotenv, azure-devops, msrest, platformdirs) and the `swagger-parser-mcp` console script. `requirements.txt` is a one-line `-e .` pointer, not a dependency list (it used to be a ~100-package `pip freeze` that included `uvloop`, which has no Windows wheels and broke installs there)
 - `fastmcp.json` — declarative FastMCP config (`source` = `main.py:mcp`, uv environment with `editable: ["."]`, stdio transport, `env_file: .env`) for `fastmcp run`
 - `internal/env.py` — `load_env()`: idempotent `.env` loading, anchored rather than CWD-dependent. Tries `find_dotenv(usecwd=True)` then `<checkout root>/.env` (`parents[1]` of this file), both with `override=False`. Replaces the bare `load_dotenv()` calls that used to sit in `internal/swagger/client.py` and `internal/azure_devops/shared.py`; an installed copy has no checkout, so it finds nothing and config must come from the client's `env` map
 - `services/cli.py` — `main()`, the console-script entry point (see Entry point above)
@@ -74,8 +70,6 @@ This project exposes Swagger/OpenAPI parsing and Azure DevOps integration throug
   - `wiki_repository.py` — `replace_wiki_pages` (bulk replace for one wiki, sorts shallowest-first internally to resolve `parent_id`), `search_wiki_cache`, `get_wiki_tree`, `get_wiki_subtree`, `get_wiki_cache_status`, `get_cached_wiki_pages`, `get_all_cached_wiki_ids`, `get_wiki_cache_last_checked_at`, `record_wiki_cache_check`
   - `__init__.py` re-exports all nine functions, so callers do `from internal.db import ...`
 - `services/mcp/` — the pure FastMCP server (see below), built with `fastmcp.FastMCP` directly (no `FastMCP.from_fastapi()`)
-- `services/rest/app.py` — independent, hand-written FastAPI app with the REST endpoints (`/{version}/enums`, `/{version}/modules`, `/{version}/paths/{module_name}`, plus `/azure/*`); not introspected for MCP generation
-- `services/app.py` — composes `services.mcp.mcp_app` (at `/mcp`) and `services.rest.app`'s routes (at their existing paths, e.g. `/azure/tasks`) into the single `combined_app`, used only when the entry point is run with `--http`; its lifespan also kicks off `internal.azure_devops.sync_all_wikis_on_startup()` as a non-blocking background task on every server start. In the default stdio mode, `services/cli.py` calls `mcp.run(transport="stdio")` directly (bypassing `combined_app`/ASGI entirely) and fires `sync_all_wikis_on_startup()` in a plain background daemon thread beforehand, since there's no ASGI lifespan to hook into
 
 **Environment variables** (`.env`):
 - `SWAGGER_JSON_V1_URL` — URL to v1 Swagger JSON
@@ -88,11 +82,11 @@ This project exposes Swagger/OpenAPI parsing and Azure DevOps integration throug
 
 **Module name extraction** (`get_module_names`): paths are parsed as `/{prefix}/{version}/{module}/...`; if the third segment is `admin`, the module name becomes `admin/{fourth_segment}`.
 
-**MCP transport:** stdio is the primary, recommended transport (`swagger-parser-mcp`, via `mcp.run(transport="stdio")` — the standard transport for MCP client configs, see Connecting to this MCP server above); streamable HTTP at `/mcp` is a secondary fallback via `swagger-parser-mcp --http`, for clients that can't spawn subprocesses or when the REST API is also needed.
+**MCP transport:** stdio only (`swagger-parser-mcp`, via `mcp.run(transport="stdio")` — the standard transport for MCP client configs, see Connecting to this MCP server above). `mcp.http_app()` is no longer called anywhere, so there is no ASGI app and no `/mcp` endpoint.
 
 ## MCP Server (`services/mcp/`)
 
-`services/mcp/server.py` creates a single `FastMCP(name="swagger_parser")` instance, then imports `resources`, `tools`, and `prompts` submodules for their registration side effects (each decorates the shared `mcp` instance with `@mcp.tool`/`@mcp.resource`/`@mcp.prompt` at import time). `mcp_app = mcp.http_app(path="/mcp")` is what `services/app.py` mounts for `--http` mode; the default stdio mode calls `mcp.run(transport="stdio")` directly from `services/cli.py` instead.
+`services/mcp/server.py` creates a single `FastMCP(name="swagger_parser")` instance, then imports `resources`, `tools`, and `prompts` submodules for their registration side effects (each decorates the shared `mcp` instance with `@mcp.tool`/`@mcp.resource`/`@mcp.prompt` at import time). `services/cli.py` then calls `mcp.run(transport="stdio")` on that instance. `services/mcp/__init__.py` re-exports only `mcp`.
 
 **Resources** (`services/mcp/resources/`) — read-only, no side effects, addressed by URI. Query-string template params (`{?param}`) must have defaults in the function signature (a FastMCP requirement); "required" ones default to `None` and raise `ValueError` if omitted. Resource functions must return `str`/`bytes`, so all of these `json.dumps()` their result (declared `mime_type="application/json"`):
 - `swagger.py` — `swagger://{version}/enums`, `swagger://{version}/enums/{enum_name}`, `swagger://{version}/modules`, `swagger://{version}/paths/{module_name}`, `swagger://{version}/paths/{module_name}/{path*}` (single endpoint path; `path*` is a wildcard path param so it can capture embedded slashes, e.g. `{id}` placeholders — matched by suffix against the full Swagger path)
@@ -108,26 +102,16 @@ This project exposes Swagger/OpenAPI parsing and Azure DevOps integration throug
 - `wiki_page_digest(path? | page_id, wiki_id?)` — builds a summarization prompt from a wiki page and all its subpages' content
 - `pbi_breakdown_check(pbi_id)` — builds a prompt checking a PBI's child Tasks (via `get_tasks(parent_id=pbi_id)`) for completeness/state consistency
 
-## REST API (`services/rest/app.py`)
+## Azure DevOps & wiki behavior
 
-Independent FastAPI app; same endpoints as before, calling the same `internal/` functions the MCP layer uses. Not exposed as MCP tools (that auto-derivation was removed — see MCP Server section above for the native equivalents).
+Notes on what the `internal/azure_devops/` functions return and how they behave. These
+apply to the MCP Tools and Resources listed above, which call them directly. (These notes
+used to be written against the REST endpoints that wrapped the same functions; the
+endpoint names have been replaced with the Tool/Resource that now exposes each one.)
 
-| Endpoint | Operation ID | Description |
-|---|---|---|
-| `GET /azure/tasks` | `get_azure_devops_tasks` | Fetch Tasks |
-| `GET /azure/pbis` | `get_azure_devops_pbis` | Fetch Product Backlog Items |
-| `GET /azure/wiki` | `get_azure_devops_wiki_pages` | List wiki pages (metadata only: `page_id`, `path` — no content) |
-| `GET /azure/wiki/page` | `get_azure_devops_wiki_page_by_path` | Fetch a wiki page's content by `path` |
-| `GET /azure/wiki/page/{page_id}` | `get_azure_devops_wiki_page_by_id` | Fetch a wiki page's content by `page_id` |
-| `POST /azure/wiki/cache/sync` | `sync_azure_devops_wiki_cache` | Rebuild the local cache for one wiki (structure + content) |
-| `GET /azure/wiki/cache/search` | `search_azure_devops_wiki_cache` | Full-text search over the cached wiki (FTS5); results include full content, breadcrumb, matched_in |
-| `GET /azure/wiki/cache/tree` | `get_azure_devops_wiki_cache_tree` | Get the cached page hierarchy as a nested tree (no API calls) |
-| `GET /azure/wiki/cache/structure` | `get_azure_devops_wiki_cache_structure` | Get the cached folder/path subtree rooted at one page (no content, no API calls) |
-| `GET /azure/wiki/cache/status` | `get_azure_devops_wiki_cache_status` | Get cache stats (page count, last sync) per wiki |
-
-**Shared query params for `/azure/tasks` and `/azure/pbis`:**
+**Shared filters for `get_azure_devops_tasks` / `get_azure_devops_pbis`:**
 - `id` — fetch a single item by work item ID
-- `parent_id` — filter by parent PBI's work item ID (`/azure/tasks` only)
+- `parent_id` — filter by parent PBI's work item ID (`get_azure_devops_tasks` only)
 - `assignee` — substring match on display name
 - `team` — sprint board team name (scopes `@CurrentIteration` to the right team)
 - `current_sprint` — boolean; filters by `@CurrentIteration` (takes priority over `sprint`)
@@ -137,21 +121,21 @@ Independent FastAPI app; same endpoints as before, calling the same `internal/` 
 
 **Task response fields include `parent_id`** (`System.Parent`) — the ID of the parent PBI, or `null` if unset.
 
-**Task/PBI comments**: when `id` is passed to `get_tasks`/`get_pbis` (REST `/azure/tasks`/`/azure/pbis`, MCP `get_azure_devops_tasks`/`get_azure_devops_pbis`), the single returned item includes a `comments` list (`internal/azure_devops/tasks.py`'s `_get_work_item_comments`, via the SDK's `WorkItemTrackingClient.get_comments`), each entry with `id`, `text`, `created_by` (display name), `created_date`. Comments are fetched only for single-item lookups by `id` — omitted (no `comments` key) on filtered/list queries, since the Azure DevOps API has no batch endpoint for comments across multiple work items and fetching them for every row of a `top`-sized list would mean one extra API call per item.
+**Task/PBI comments**: when `id` is passed to `get_tasks`/`get_pbis` (via the `get_azure_devops_tasks`/`get_azure_devops_pbis` Tools), the single returned item includes a `comments` list (`internal/azure_devops/tasks.py`'s `_get_work_item_comments`, via the SDK's `WorkItemTrackingClient.get_comments`), each entry with `id`, `text`, `created_by` (display name), `created_date`. Comments are fetched only for single-item lookups by `id` — omitted (no `comments` key) on filtered/list queries, since the Azure DevOps API has no batch endpoint for comments across multiple work items and fetching them for every row of a `top`-sized list would mean one extra API call per item.
 
-**Wiki endpoints:**
-- `/azure/wiki` accepts an optional `wiki_id` (ID or name); if omitted, all wikis in the project are listed.
-- `/azure/wiki/page` and `/azure/wiki/page/{page_id}` accept an optional `wiki_id`; if omitted, it defaults to the project's default wiki (name == project name, the standard Azure DevOps convention).
-- Both page-lookup endpoints return `wiki_id`, `wiki_name` (null unless resolved from a listed wiki), `page_id`, `path`, `content`, `is_parent_page`, `order`, `url`, `sub_pages`, and `sub_pages_truncated`.
+**Live wiki resources** (`wiki://*`, `internal/azure_devops/wiki.py`):
+- `wiki://pages` lists every wiki in the project; `wiki://{wiki_id}/pages` scopes to one (`wiki_id` is an ID or a name).
+- `wiki://page-by-path` / `wiki://page-by-id/{page_id}` default to the project's default wiki (name == project name, the standard Azure DevOps convention); the `wiki://{wiki_id}/...` variants target a specific one.
+- Both page lookups return `wiki_id`, `wiki_name` (null unless resolved from a listed wiki), `page_id`, `path`, `content`, `is_parent_page`, `order`, `url`, `sub_pages`, and `sub_pages_truncated`.
 
-**Wiki subpages** (`/azure/wiki/page`, `/azure/wiki/page/{page_id}`): if a page has children, `sub_pages` recursively nests every descendant (with its own content and `sub_pages`), mirroring the wiki's hierarchy. Azure DevOps' `recursionLevel=full` only returns descendant paths, not content or IDs, so each descendant's content is fetched with a separate `get_page` call. Capped at `MAX_SUBPAGES_FETCHED` (50, in `internal/azure_devops/wiki.py`) total descendants per request; if the cap is hit, `sub_pages_truncated` is `true` and the remaining descendants at that point in the tree are omitted.
+**Wiki subpages** (`wiki://page-by-path`, `wiki://page-by-id/{page_id}`): if a page has children, `sub_pages` recursively nests every descendant (with its own content and `sub_pages`), mirroring the wiki's hierarchy. Azure DevOps' `recursionLevel=full` only returns descendant paths, not content or IDs, so each descendant's content is fetched with a separate `get_page` call. Capped at `MAX_SUBPAGES_FETCHED` (50, in `internal/azure_devops/wiki.py`) total descendants per request; if the cap is hit, `sub_pages_truncated` is `true` and the remaining descendants at that point in the tree are omitted.
 
-**Wiki pagination** (`/azure/wiki`): response shape is `{"pages": [...], "continuation_token": ...}`. Pass `top` and `continuation_token` (from a previous response) to page through a single wiki's pages — this only works when `wiki_id` is set, since Azure DevOps continuation tokens are per-wiki. When `wiki_id` is omitted (listing all wikis), `continuation_token` is always `null` and each wiki returns up to `top` pages with no further pagination.
+**Wiki pagination** (`wiki://{wiki_id}/pages`): response shape is `{"pages": [...], "continuation_token": ...}`. Pass `top` and `continuation_token` (from a previous response) to page through a single wiki's pages — this only works when `wiki_id` is set, since Azure DevOps continuation tokens are per-wiki. When `wiki_id` is omitted (listing all wikis), `continuation_token` is always `null` and each wiki returns up to `top` pages with no further pagination.
 
-**Wiki cache** (`internal/azure_devops/wiki_sync.py` orchestrating `internal/db/`): a local SQLite database (per-user data dir by default, or an existing `<repo>/data/wiki_cache.db`; override with `WIKI_CACHE_DB_PATH`) caching wiki structure and content for full-text search, entirely separate from the live `/azure/wiki*` endpoints above (those still always hit the API — the cache is purely additive). Full details and the incremental-sync algorithm: [docs/wiki-cache.md](docs/wiki-cache.md).
+**Wiki cache** (`internal/azure_devops/wiki_sync.py` orchestrating `internal/db/`): a local SQLite database (per-user data dir by default, or an existing `<repo>/data/wiki_cache.db`; override with `WIKI_CACHE_DB_PATH`) caching wiki structure and content for full-text search, entirely separate from the live `wiki://*` resources above (those still always hit the API — the cache is purely additive). Full details and the incremental-sync algorithm: [docs/wiki-cache.md](docs/wiki-cache.md).
 
-- `sync_azure_devops_wiki_cache` (`wiki_id` required, `fetch_content` default `true`) — full/bootstrap resync, fully replacing that wiki's cached rows. Only needed for a wiki's first-ever sync or to force a full reset: every wiki in the project is also resynced automatically (in the background, non-blocking) on every server startup (`sync_all_wikis_on_startup`, wired into `services/app.py`'s lifespan), and reads auto-refresh incrementally once stale (see below). The cache starts empty; nothing else here works until a sync — manual or startup — has completed for a wiki at least once.
-- **Automatic staleness refresh**: every wiki-cache read (REST `/azure/wiki/cache/*` GETs, MCP `wiki-cache://*` resources) calls `ensure_wiki_cache_fresh(wiki_id, stale_after_seconds)` first. If the wiki was checked more recently than `stale_after_seconds` (default `WIKI_CACHE_STALE_SECONDS`, 1 day), this is a no-op (zero Azure calls). Otherwise it calls `check_and_refresh_wiki_cache`, which:
+- `sync_azure_devops_wiki_cache` (`wiki_id` required, `fetch_content` default `true`) — full/bootstrap resync, fully replacing that wiki's cached rows. Only needed for a wiki's first-ever sync or to force a full reset: every wiki in the project is also resynced automatically (in the background, non-blocking) on every server startup (`sync_all_wikis_on_startup`, started as a daemon thread by `services/cli.py:main`), and reads auto-refresh incrementally once stale (see below). The cache starts empty; nothing else here works until a sync — manual or startup — has completed for a wiki at least once.
+- **Automatic staleness refresh**: every wiki-cache read (the `wiki-cache://*` resources) calls `ensure_wiki_cache_fresh(wiki_id, stale_after_seconds)` first. If the wiki was checked more recently than `stale_after_seconds` (default `WIKI_CACHE_STALE_SECONDS`, 1 day), this is a no-op (zero Azure calls). Otherwise it calls `check_and_refresh_wiki_cache`, which:
   1. Lists current pages via `GetPagesBatch` (cheap, ~0.4s for 417 pages) and fetches every page's live last-modified date in **one bulk call** — `GitClient.get_items(repository_id, scope_path="/", recursion_level="full", latest_processed_change=True)` against the wiki's backing git repo (`WikiV2.repository_id`) — matched back to pages via each page's `git_item_path` (~3s total for 417 pages, regardless of size, vs. one API call per page for content).
   2. For each live page: if it's new, or its live modified date is newer than the cached `content_modified_at`, re-fetches that page's content via `get_page_by_id` (which also returns `git_item_path`, needed to look up its date next time). Otherwise reuses the cached content untouched — no Azure content call.
   3. Pages that no longer exist live are dropped. The reconciled page set (mix of reused + freshly-fetched) is written via `replace_wiki_pages`, and `record_wiki_cache_check` stamps `last_checked_at` for the gate above.

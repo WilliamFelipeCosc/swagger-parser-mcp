@@ -23,14 +23,6 @@ dependencies = [
     "platformdirs>=4.0",
 ]
 
-[project.optional-dependencies]
-# Only services/app.py and services/rest/app.py need these, and only the
-# `--http` branch of services/cli.py imports them.
-http = [
-    "fastapi>=0.110",
-    "uvicorn>=0.30",
-]
-
 [project.scripts]
 swagger-parser-mcp = "services.cli:main"
 

@@ -13,25 +13,19 @@ from services.mcp.server import mcp
 
 
 def main() -> None:
+    argparse.ArgumentParser(
+        prog="swagger-parser-mcp",
+        description=(
+            "MCP server for Swagger/OpenAPI parsing and Azure DevOps "
+            "(Tasks/PBIs, wiki, cached full-text search). Speaks MCP over "
+            "stdio; launch it from an MCP client rather than by hand."
+        ),
+    ).parse_args()
+
     load_env()
 
-    parser = argparse.ArgumentParser(prog="swagger-parser-mcp")
-    parser.add_argument(
-        "--http",
-        action="store_true",
-        help="Serve REST + MCP over HTTP on :9876 instead of MCP over stdio",
-    )
-    args = parser.parse_args()
+    # No ASGI lifespan to hook into on stdio, so the startup resync runs in a
+    # plain daemon thread. Non-blocking: the server starts serving immediately.
+    threading.Thread(target=sync_all_wikis_on_startup, daemon=True).start()
 
-    if args.http:
-        # Imported lazily: FastAPI/uvicorn (and the whole services.rest tree)
-        # are only needed for this branch, which is why they live in the
-        # optional `http` extra rather than the base dependencies.
-        import uvicorn
-
-        from services.app import combined_app
-
-        uvicorn.run(combined_app, host="localhost", port=9876)
-    else:
-        threading.Thread(target=sync_all_wikis_on_startup, daemon=True).start()
-        mcp.run(transport="stdio")
+    mcp.run(transport="stdio")

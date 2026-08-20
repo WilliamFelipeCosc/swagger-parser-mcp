@@ -1,9 +1,10 @@
 # swagger-parser-mcp
 
-Exposes Swagger/OpenAPI parsing and Azure DevOps integration (Tasks/PBIs, live wiki
-pages, and a local full-text-searchable wiki cache) through two independent surfaces
-served on a single port: a native MCP (Model Context Protocol) server and a
-hand-written REST API. Neither surface is derived from the other.
+A native MCP (Model Context Protocol) server exposing Swagger/OpenAPI parsing and Azure
+DevOps integration — Tasks/PBIs, live wiki pages, and a local full-text-searchable wiki
+cache — as Tools, Resources and Prompts. It speaks **stdio only**: your MCP client
+launches it as a subprocess, so there's no port, no HTTP endpoint and no server process
+to keep alive.
 
 ## Prerequisites
 
@@ -44,13 +45,10 @@ cd swagger-parser-mcp
 python3 -m venv .venv          # Windows: python -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
 
-pip install -e ".[http]"       # or: pip install -r requirements.txt
+pip install -e .               # or: pip install -r requirements.txt
 ```
 
-`requirements.txt` is just `-e .[http]`; the real dependency list lives in
-`pyproject.toml`. The `http` extra adds FastAPI and uvicorn, which only the `--http`
-mode needs — the default stdio path never imports FastAPI, so a bare
-`pip install -e .` is enough if you only want the MCP server.
+`requirements.txt` is just `-e .`; the real dependency list lives in `pyproject.toml`.
 
 ## Configuration
 
@@ -113,22 +111,6 @@ SQLite+FTS5 cache in the background on startup (non-blocking) — see
 [Wiki Cache Internals](docs/wiki-cache.md).
 
 There are no automated tests or lint commands configured for this project.
-
-### HTTP mode (fallback)
-
-Only needed if your MCP client can't spawn subprocesses, or you also want the REST API.
-Requires the `http` extra.
-
-```bash
-swagger-parser-mcp --http
-
-# or directly with uvicorn
-uvicorn services.app:combined_app --host localhost --port 9876 --reload
-```
-
-The server starts on `http://localhost:9876`. The MCP endpoint is at
-`http://localhost:9876/mcp`; interactive REST docs are at
-`http://localhost:9876/docs`.
 
 ### `fastmcp run` (dev)
 
@@ -196,33 +178,15 @@ fastmcp install mcp-json main.py --env-file .env     # prints JSON for any other
 
 Individual values can be passed with repeated `--env KEY=VALUE` flags instead.
 
-### HTTP mode (fallback)
-
-Only if you're running the server with `--http` (see above):
-
-```json
-{
-  "mcpServers": {
-    "swagger-parser": {
-      "url": "http://localhost:9876/mcp"
-    }
-  }
-}
-```
-
-```bash
-claude mcp add --transport http swagger-parser http://localhost:9876/mcp
-```
-
 ## What's exposed
 
-**MCP server** (`/mcp`) — Resources (read-only, addressed by URI: Swagger enums/modules/
-paths, live wiki pages, cached wiki tree/structure/status/search), Tools (Azure DevOps
-Tasks/PBIs queries, and the one mutating operation — wiki cache resync), and Prompts
-(sprint status report, wiki page digest, PBI breakdown check).
+**Resources** (read-only, addressed by URI) — Swagger enums/modules/paths, live wiki
+pages, and the cached wiki tree/structure/status/search.
 
-**REST API** (`/{version}/*`, `/azure/*`) — the same underlying functionality as a plain
-FastAPI surface; not derived from or exposed as MCP tools.
+**Tools** — Azure DevOps Tasks/PBIs queries, plus the one mutating operation (wiki cache
+resync).
+
+**Prompts** — sprint status report, wiki page digest, PBI breakdown check.
 
 **Example prompts to try in Claude:**
 - *"List all modules in the v1 API"*
@@ -236,7 +200,6 @@ See the full reference docs for exact URIs/parameters:
 - [Documentation index](docs/README.md)
 - [Architecture](docs/architecture.md) — layers, module boundaries, entry point, environment variables
 - [MCP Reference](docs/mcp-reference.md) — every Tool, Resource, and Prompt, with URIs/parameters
-- [REST API Reference](docs/rest-api.md) — every REST endpoint, with query parameters and response shapes
 - [Wiki Cache Internals](docs/wiki-cache.md) — the local SQLite+FTS5 cache: schema, sync flow, and query functions
 
 ## Module Name Convention
