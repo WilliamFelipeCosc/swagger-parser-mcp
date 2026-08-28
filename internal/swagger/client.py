@@ -20,4 +20,7 @@ def get_swagger_json_url(version: swagger_version):
 
 def load_json(url: str):
     response = requests.get(url)
-    return jsonref.loads(response.text, base_uri=url, proxies=False)
+    # Lazy proxies (jsonref's default): $refs are only dereferenced when the
+    # caller actually accesses that part of the document, instead of eagerly
+    # resolving every $ref in the whole spec up front.
+    return jsonref.loads(response.text, base_uri=url)
