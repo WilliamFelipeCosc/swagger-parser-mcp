@@ -61,10 +61,10 @@ This project exposes Swagger/OpenAPI parsing and Azure DevOps integration as a s
   - `__init__.py` composes the two into the three public functions: `get_enums`, `get_paths`, `get_modules`
 - `internal/azure_devops/` — Azure DevOps integration using the `azure-devops` Python SDK, split by concern:
   - `shared.py` — `_get_connection`/`_get_project`, used by both submodules below
-  - `tasks.py` — Tasks/PBIs (board) integration; exposes `get_tasks` (accepts an optional `parent_id` filter), `get_pbis`
+  - `tasks.py` — Tasks/PBIs/Features/Epics (board) integration; exposes `get_tasks` (accepts an optional `parent_id` filter), `get_pbis` (also `parent_id`, filtering by parent Feature), `get_features` (also `parent_id`, filtering by parent Epic), `get_epics` (no `parent_id` — top of the hierarchy)
   - `wiki.py` — live Wiki API calls; exposes `get_wiki_pages`, `get_wiki_page_by_path`, `get_wiki_page_by_id`
   - `wiki_sync.py` — orchestrates cache rebuilds and staleness checks: fetches pages/content from the Azure API (via `wiki.py`'s `_get_pages_batch_page`) and persists them via `internal.db.replace_wiki_pages`; exposes `sync_wiki_cache` (full/bootstrap resync), `check_and_refresh_wiki_cache` (TTL-gated incremental refresh), `ensure_wiki_cache_fresh` (best-effort wrapper called before cache reads), and `sync_all_wikis_on_startup`. This is the only module that talks to both the Azure API and the SQLite cache — `wiki.py` never touches SQLite and `internal/db/` never calls Azure. See [Wiki Cache Internals](docs/wiki-cache.md) for the full incremental-sync algorithm.
-  - `__init__.py` re-exports `get_tasks`, `get_pbis`, `get_wiki_pages`, `get_wiki_page_by_path`, `get_wiki_page_by_id`, `sync_wiki_cache`, `check_and_refresh_wiki_cache`, `ensure_wiki_cache_fresh`, `sync_all_wikis_on_startup`
+  - `__init__.py` re-exports `get_tasks`, `get_pbis`, `get_features`, `get_epics`, `get_wiki_pages`, `get_wiki_page_by_path`, `get_wiki_page_by_id`, `sync_wiki_cache`, `check_and_refresh_wiki_cache`, `ensure_wiki_cache_fresh`, `sync_all_wikis_on_startup`
 - `internal/db/` — generic SQLite+FTS5 persistence layer for the wiki cache, with zero Azure API knowledge:
   - `connection.py` — `_get_db_connection` (path from `_get_db_path()`: `WIKI_CACHE_DB_PATH` if set, else the legacy `<repo>/data/wiki_cache.db` **only if that file already exists**, else `platformdirs.user_data_dir("swagger-parser-mcp")/wiki_cache.db`; the legacy branch keeps an existing dev checkout on its populated cache, while installed copies get a writable per-user path instead of one inside `site-packages`), schema creation (idempotent migrations for `git_item_path`/`content_modified_at` columns added after the initial release)
   - `wiki_repository.py` — `replace_wiki_pages` (bulk replace for one wiki, sorts shallowest-first internally to resolve `parent_id`), `search_wiki_cache`, `get_wiki_tree`, `get_wiki_subtree`, `get_wiki_cache_status`, `get_cached_wiki_pages`, `get_all_cached_wiki_ids`, `get_wiki_cache_last_checked_at`, `record_wiki_cache_check`
@@ -94,7 +94,7 @@ This project exposes Swagger/OpenAPI parsing and Azure DevOps integration as a s
 - `wiki_cache.py` — `wiki-cache://tree{?wiki_id,stale_after_seconds}`, `wiki-cache://{wiki_id}/structure{?root_page_id,root_path,stale_after_seconds}`, `wiki-cache://status{?wiki_id,stale_after_seconds}`, `wiki-cache://search{?q,wiki_id,limit,stale_after_seconds}` — each calls `ensure_wiki_cache_fresh` before reading (see Wiki Cache Internals)
 
 **Tools** (`services/mcp/tools/`) — actions and queries with many dynamic filters:
-- `azure_work_items.py` — `get_azure_devops_tasks` (filters: `id`, `parent_id`, `assignee`, `team`, `current_sprint`, `sprint`, `state`, `top`), `get_azure_devops_pbis` (same minus `parent_id`). When `id` is set, the returned item includes a `comments` list (see Task/PBI comments below).
+- `azure_work_items.py` — `get_azure_devops_tasks` (filters: `id`, `parent_id`, `assignee`, `team`, `current_sprint`, `sprint`, `state`, `top`), `get_azure_devops_pbis`/`get_azure_devops_features` (same, `parent_id` scopes to the parent Feature/Epic respectively), `get_azure_devops_epics` (same minus `parent_id`, top of the hierarchy). When `id` is set, the returned item includes a `comments` list, and for PBI/Feature/Epic also a `children` list (see Comments and children below).
 - `wiki_cache_sync.py` — `sync_azure_devops_wiki_cache(wiki_id, fetch_content=True)`, the only mutating operation (rewrites the SQLite cache)
 
 **Prompts** (`services/mcp/prompts/`):
@@ -109,9 +109,9 @@ apply to the MCP Tools and Resources listed above, which call them directly. (Th
 used to be written against the REST endpoints that wrapped the same functions; the
 endpoint names have been replaced with the Tool/Resource that now exposes each one.)
 
-**Shared filters for `get_azure_devops_tasks` / `get_azure_devops_pbis`:**
+**Shared filters for `get_azure_devops_tasks` / `get_azure_devops_pbis` / `get_azure_devops_features` / `get_azure_devops_epics`:**
 - `id` — fetch a single item by work item ID
-- `parent_id` — filter by parent PBI's work item ID (`get_azure_devops_tasks` only)
+- `parent_id` — filter by the parent item's work item ID: parent PBI for `get_azure_devops_tasks`, parent Feature for `get_azure_devops_pbis`, parent Epic for `get_azure_devops_features` (not available on `get_azure_devops_epics` — top of the hierarchy, no Initiative level in this process template)
 - `assignee` — substring match on display name
 - `team` — sprint board team name (scopes `@CurrentIteration` to the right team)
 - `current_sprint` — boolean; filters by `@CurrentIteration` (takes priority over `sprint`)
@@ -119,9 +119,9 @@ endpoint names have been replaced with the Tool/Resource that now exposes each o
 - `state` — e.g. `Active`, `New`, `Closed`
 - `top` — max results (default 100)
 
-**Task response fields include `parent_id`** (`System.Parent`) — the ID of the parent PBI, or `null` if unset.
+**Work item response fields include `parent_id`** (`System.Parent`) — the ID of the parent item, or `null` if unset. All four types also return `effort` (`Microsoft.VSTS.Scheduling.Effort`), `business_value` (`Microsoft.VSTS.Common.BusinessValue`), `time_criticality` (`Microsoft.VSTS.Common.TimeCriticality`), and `start_date`/`target_date` (`Microsoft.VSTS.Scheduling.StartDate`/`TargetDate`) — populated only where the process template's work item type actually carries that field (Features/Epics typically; `null` on Tasks/PBIs otherwise). Azure DevOps only returns the fields a work item's default view includes unless a `fields` list is passed explicitly — `System.Parent` in particular is populated but silently omitted without this, despite being queryable via WIQL. `internal/azure_devops/tasks.py`'s `REQUESTED_FIELDS` list is passed to every `get_work_item`/`get_work_items` call for this reason; any new field added to `_extract_work_item_fields` must also be added there or it will always read back as `None`.
 
-**Task/PBI comments**: when `id` is passed to `get_tasks`/`get_pbis` (via the `get_azure_devops_tasks`/`get_azure_devops_pbis` Tools), the single returned item includes a `comments` list (`internal/azure_devops/tasks.py`'s `_get_work_item_comments`, via the SDK's `WorkItemTrackingClient.get_comments`), each entry with `id`, `text`, `created_by` (display name), `created_date`. Comments are fetched only for single-item lookups by `id` — omitted (no `comments` key) on filtered/list queries, since the Azure DevOps API has no batch endpoint for comments across multiple work items and fetching them for every row of a `top`-sized list would mean one extra API call per item.
+**Comments and children**: when `id` is passed to `get_tasks`/`get_pbis`/`get_features`/`get_epics` (via the corresponding Tools), the single returned item includes a `comments` list (`internal/azure_devops/tasks.py`'s `_get_work_item_comments`, via the SDK's `WorkItemTrackingClient.get_comments`), each entry with `id`, `text`, `created_by` (display name), `created_date`. Comments are fetched only for single-item lookups by `id` — omitted (no `comments` key) on filtered/list queries, since the Azure DevOps API has no batch endpoint for comments across multiple work items and fetching them for every row of a `top`-sized list would mean one extra API call per item. For PBI/Feature/Epic (not Task, a leaf type), the same single-item lookup also adds a `children` list: the item's direct children (Task for PBI, PBI for Feature, Feature for Epic), each shaped like a top-level list result. Children are fetched via `_get_child_work_items`, a WIQL query scoped by `[System.Parent] = <id>` and batched through the same 200-item `get_work_items` chunking as list queries, capped at 200 direct children per lookup.
 
 **Live wiki resources** (`wiki://*`, `internal/azure_devops/wiki.py`):
 - `wiki://pages` lists every wiki in the project; `wiki://{wiki_id}/pages` scopes to one (`wiki_id` is an ID or a name).

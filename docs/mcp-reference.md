@@ -99,12 +99,16 @@ anything to serve at all.
 | Tool | Parameters | Description |
 |---|---|---|
 | `get_azure_devops_tasks` | `id?`, `parent_id?`, `assignee?`, `team?`, `current_sprint?`, `sprint?`, `state?`, `top?` (default 100) | Fetch Tasks. `parent_id` filters by the parent PBI's work item ID |
-| `get_azure_devops_pbis` | `id?`, `assignee?`, `team?`, `current_sprint?`, `sprint?`, `state?`, `top?` | Fetch Product Backlog Items (same filters, no `parent_id`) |
+| `get_azure_devops_pbis` | `id?`, `parent_id?`, `assignee?`, `team?`, `current_sprint?`, `sprint?`, `state?`, `top?` | Fetch Product Backlog Items. `parent_id` filters by the parent Feature's work item ID |
+| `get_azure_devops_features` | `id?`, `parent_id?`, `assignee?`, `team?`, `current_sprint?`, `sprint?`, `state?`, `top?` | Fetch Features. `parent_id` filters by the parent Epic's work item ID |
+| `get_azure_devops_epics` | `id?`, `assignee?`, `team?`, `current_sprint?`, `sprint?`, `state?`, `top?` | Fetch Epics (top of the hierarchy, no `parent_id`) |
 
 Filter semantics: `id` is an exact work-item-ID lookup; `assignee` is a substring match on
 display name; `team` scopes `@CurrentIteration` to the right team's board; `current_sprint`
 takes priority over `sprint` (a substring match on iteration path); `state` is an exact
-match (`Active`, `New`, `Closed`, ...).
+match (`Active`, `New`, `Closed`, ...). When `id` is set on `get_azure_devops_pbis` /
+`get_azure_devops_features` / `get_azure_devops_epics`, the result also includes a
+`children` list of that item's direct children (Task/PBI/Feature respectively).
 
 ### `services/mcp/tools/wiki_cache_sync.py`
 
@@ -140,6 +144,9 @@ await client.call_tool("get_azure_devops_tasks", {"parent_id": 1234, "current_sp
 
 # Tool: single PBI by id
 await client.call_tool("get_azure_devops_pbis", {"id": 1234})
+
+# Tool: single Epic by id (includes its child Features)
+await client.call_tool("get_azure_devops_epics", {"id": 5678})
 
 # Prompt: sprint report for a team
 await client.get_prompt("sprint_status_report", {"team": "Platform"})

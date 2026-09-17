@@ -1,7 +1,7 @@
 # swagger-parser-mcp
 
 A native MCP (Model Context Protocol) server exposing Swagger/OpenAPI parsing and Azure
-DevOps integration — Tasks/PBIs, live wiki pages, and a local full-text-searchable wiki
+DevOps integration — Tasks/PBIs/Features/Epics, live wiki pages, and a local full-text-searchable wiki
 cache — as Tools, Resources and Prompts. It speaks **stdio only**: your MCP client
 launches it as a subprocess, so there's no port, no HTTP endpoint and no server process
 to keep alive.
@@ -63,7 +63,7 @@ cp .env.example .env
 SWAGGER_JSON_V1_URL=https://your-api.example.com/swagger/v1/swagger.json
 SWAGGER_JSON_V2_URL=https://your-api.example.com/swagger/v2/swagger.json
 
-# Optional: Azure DevOps integration (Tasks/PBIs, wiki)
+# Optional: Azure DevOps integration (Tasks/PBIs/Features/Epics, wiki)
 AZURE_DEVOPS_ORG_URL=https://dev.azure.com/YOUR_ORG
 AZURE_DEVOPS_PAT=your_personal_access_token
 AZURE_DEVOPS_PROJECT=YourProjectName
@@ -183,8 +183,8 @@ Individual values can be passed with repeated `--env KEY=VALUE` flags instead.
 **Resources** (read-only, addressed by URI) — Swagger enums/modules/paths, live wiki
 pages, and the cached wiki tree/structure/status/search.
 
-**Tools** — Azure DevOps Tasks/PBIs queries, plus the one mutating operation (wiki cache
-resync).
+**Tools** — Azure DevOps Tasks/PBIs/Features/Epics queries, plus the one mutating operation
+(wiki cache resync).
 
 **Prompts** — sprint status report, wiki page digest, PBI breakdown check.
 
