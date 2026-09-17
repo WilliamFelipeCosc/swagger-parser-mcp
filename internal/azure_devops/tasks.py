@@ -1,5 +1,7 @@
 from typing import Optional
+from azure.devops.exceptions import AzureDevOpsServiceError
 from azure.devops.v7_1.work_item_tracking.models import Wiql, TeamContext
+from fastmcp.exceptions import ToolError
 from .shared import _get_connection, _get_project
 
 
@@ -120,50 +122,53 @@ def _get_work_items_by_type(
     project = _get_project()
     client = connection.clients.get_work_item_tracking_client()
 
-    if item_id is not None:
-        item = client.get_work_item(item_id, fields=REQUESTED_FIELDS)
-        if not item:
+    try:
+        if item_id is not None:
+            item = client.get_work_item(item_id, fields=REQUESTED_FIELDS)
+            if not item:
+                return []
+            fields = _extract_work_item_fields(item)
+            fields["comments"] = _get_work_item_comments(client, project, item_id)
+            child_type = CHILD_TYPE.get(work_item_type)
+            if child_type:
+                fields["children"] = _get_child_work_items(client, project, item_id, child_type)
+            return [fields]
+
+        conditions = [
+            f"[System.TeamProject] = '{project}'",
+            f"[System.WorkItemType] = '{work_item_type}'",
+        ]
+        if parent_id is not None:
+            conditions.append(f"[System.Parent] = {parent_id}")
+        if current_sprint:
+            conditions.append("[System.IterationPath] = @CurrentIteration")
+        elif sprint:
+            conditions.append(f"[System.IterationPath] CONTAINS '{sprint}'")
+        if assignee:
+            conditions.append(f"[System.AssignedTo] CONTAINS '{assignee}'")
+        if state:
+            conditions.append(f"[System.State] = '{state}'")
+
+        where_clause = " AND ".join(conditions)
+        wiql = Wiql(query=f"SELECT [System.Id] FROM WorkItems WHERE {where_clause} ORDER BY [System.ChangedDate] DESC")
+
+        team_context = TeamContext(project=project, team=team)
+        query_result = client.query_by_wiql(wiql, team_context=team_context, top=top)
+        work_item_refs = query_result.work_items
+
+        if not work_item_refs:
             return []
-        fields = _extract_work_item_fields(item)
-        fields["comments"] = _get_work_item_comments(client, project, item_id)
-        child_type = CHILD_TYPE.get(work_item_type)
-        if child_type:
-            fields["children"] = _get_child_work_items(client, project, item_id, child_type)
-        return [fields]
 
-    conditions = [
-        f"[System.TeamProject] = '{project}'",
-        f"[System.WorkItemType] = '{work_item_type}'",
-    ]
-    if parent_id is not None:
-        conditions.append(f"[System.Parent] = {parent_id}")
-    if current_sprint:
-        conditions.append("[System.IterationPath] = @CurrentIteration")
-    elif sprint:
-        conditions.append(f"[System.IterationPath] CONTAINS '{sprint}'")
-    if assignee:
-        conditions.append(f"[System.AssignedTo] CONTAINS '{assignee}'")
-    if state:
-        conditions.append(f"[System.State] = '{state}'")
+        ids = [ref.id for ref in work_item_refs]
+        items = []
+        for chunk_start in range(0, len(ids), 200):
+            chunk = ids[chunk_start:chunk_start + 200]
+            batch = client.get_work_items(ids=chunk, fields=REQUESTED_FIELDS, error_policy="omit")
+            items.extend([_extract_work_item_fields(i) for i in batch if i is not None])
 
-    where_clause = " AND ".join(conditions)
-    wiql = Wiql(query=f"SELECT [System.Id] FROM WorkItems WHERE {where_clause} ORDER BY [System.ChangedDate] DESC")
-
-    team_context = TeamContext(project=project, team=team)
-    query_result = client.query_by_wiql(wiql, team_context=team_context, top=top)
-    work_item_refs = query_result.work_items
-
-    if not work_item_refs:
-        return []
-
-    ids = [ref.id for ref in work_item_refs]
-    items = []
-    for chunk_start in range(0, len(ids), 200):
-        chunk = ids[chunk_start:chunk_start + 200]
-        batch = client.get_work_items(ids=chunk, fields=REQUESTED_FIELDS, error_policy="omit")
-        items.extend([_extract_work_item_fields(i) for i in batch if i is not None])
-
-    return items
+        return items
+    except AzureDevOpsServiceError as e:
+        raise ToolError(f"Azure DevOps request failed: {e}") from e
 
 
 def get_tasks(

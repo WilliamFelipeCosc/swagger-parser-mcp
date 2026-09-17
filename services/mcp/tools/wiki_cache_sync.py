@@ -1,3 +1,5 @@
+from mcp.types import ToolAnnotations
+
 from internal.azure_devops import sync_wiki_cache
 
 from ..server import mcp
@@ -5,6 +7,12 @@ from ..server import mcp
 
 @mcp.tool(
     name="sync_azure_devops_wiki_cache",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
     description=(
         "Rebuilds the local SQLite+FTS5 cache for one wiki: paginates through every page "
         "and (by default) fetches each page's content individually, then replaces that "
